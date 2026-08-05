@@ -1,29 +1,47 @@
 # TAREL
 
-**A local-first analytics context compiler for coding agents.**
+[![CI](https://github.com/Mattiascherzgit/tarel/actions/workflows/ci.yml/badge.svg)](https://github.com/Mattiascherzgit/tarel/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
 
-TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**.
+**Give coding agents the right analytics context -- and let them extend the tool when the source is
+new.**
 
-TAREL helps coding agents navigate large, poorly documented data warehouses, BI platforms, and
-ERP schemas. It discovers technical metadata, proposes reviewable semantic descriptions, preserves
-relationships in a graph, retrieves the relevant neighborhood for a question, and emits a small,
-deterministic context packet.
+TAREL is a local-first context compiler for data warehouses, BI systems, and ERP schemas. It turns
+technical metadata, bounded evidence, semantic annotations, and relationships into compact context
+that an agent can actually use.
 
-TAREL is a dependency-light Python CLI and an experimental application core. It is designed to be
-used by coding agents and embedded into other tools; it is not a chat application, data catalog UI,
-SQL execution engine, or mandatory graph server.
+```text
+known source -> technical graph -> reviewed meaning -> retrieval -> agent context
+new source   -> agent-built connector candidate -> human gate -> same pipeline
+```
+
+TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**. It is a dependency-light
+Python CLI with no mandatory runtime dependency. Use it directly from Codex, Claude Code, Pi, or
+another coding agent; later, embed the same application core into your own software.
+
+TAREL follows a self-modifying-software idea with a deliberate safety boundary. When it encounters
+an unsupported source, the coding agent operating TAREL can create an isolated connector candidate,
+research the official metadata APIs and dialect, implement the adapter, and test it locally. A
+human reviews the code and observed results before activation. The kernel stays small while the
+installation can grow toward the systems it actually encounters.
+
+TAREL is deliberately not another catalog UI, chat application, SQL execution engine, or mandatory
+graph server. It is the small layer between a complex analytical estate and an agent's limited
+context window.
 
 > TAREL is pre-alpha software. The CLI and serialized contracts may still change before `0.0.1`.
 > A stable public SDK, operational lineage, and semantic-standard interoperability are not part of
 > the current release.
 
-## Why TAREL?
+## The problem it solves
 
 An agent can inspect a small, well-named schema directly. Real analytical estates are different:
 hundreds of tables, abbreviated names, missing foreign keys, undocumented measures, several source
 systems, and knowledge that exists only in people's heads.
 
-TAREL turns that estate into evidence-backed context:
+Dumping an entire schema into the prompt wastes context and still leaves the agent guessing. TAREL
+instead builds a reusable map of the estate and compiles only the relevant part for each question:
 
 1. A connector observes schemas, tables, views, fields, keys, descriptions, and bounded samples.
 2. TAREL builds a deterministic technical graph with stable identities.
@@ -32,14 +50,46 @@ TAREL turns that estate into evidence-backed context:
 5. Search selects useful graph objects and expands through trusted relationships.
 6. The context compiler emits only the relevant objects, fields, joins, warnings, and provenance.
 
-The source database remains the authority. TAREL stores metadata and claims, not copied warehouse
-contents.
+The result is small enough for an agent, explicit enough for a human to review, and deterministic
+enough for prompt caching. The source database remains authoritative: TAREL stores metadata and
+claims, not a copy of the warehouse.
+
+## Design principles
+
+- **Self-extending, human-gated.** A coding agent can build missing source adapters locally from
+  explicit contracts; generated code remains isolated and inactive until reviewed.
+- **Local first.** Graphs, indexes, reviews, and context packets work without a hosted service.
+- **Evidence before confidence.** Technical observations, generated proposals, and human-validated
+  knowledge remain distinguishable.
+- **Human-reviewed semantics.** Generated descriptions and inferred joins begin as proposals, never
+  as silent truth.
+- **Small, stable context.** Deterministic ordering, explicit budgets, hashes, and visible omissions
+  make output inspectable and cache-friendly.
+- **Optional complexity.** The core uses only the Python standard library. Database drivers, local
+  embeddings, and remote LLM calls are opt-in.
+- **Agent-native, provider-neutral.** The agent already operating the CLI can research and extend
+  TAREL. An optional provider handles repeatable parallel annotation jobs.
+
+## Start here
+
+If you are evaluating TAREL, follow the [five-minute local demo](#five-minute-local-demo). It needs
+no credentials and exercises discovery, graph construction, annotation exchange, relationship
+detection, retrieval, context compilation, and schema-drift reporting.
+
+If you already have a source:
+
+- read [Teach TAREL a new source](#teach-tarel-a-new-source) when no connector exists;
+- read [Connector runtime](#connector-runtime) for the current built-in adapters;
+- read [Semantic annotation and review](#semantic-annotation-and-review) for meaning and approval;
+- read [Retrieval modes](#retrieval-modes) and
+  [Deterministic context packets](#deterministic-context-packets) for agent integration.
 
 ## Implemented features
 
 | Area | Current capability |
 |---|---|
-| Connectors | First-party SQLite and SQL Server connectors; versioned read-only manifests; isolated connector scaffolding |
+| Self-extension | Agent-readable connector tasks, isolated candidates, versioned manifests, dialect references, and a human activation gate |
+| Connector runtime | Stable read-only contracts for probing, metadata discovery, sampling, and bounded relationship evidence |
 | Discovery | Catalog, namespace, table, view, field, type, nullability, primary key, foreign key, and technical description observations |
 | Sampling | Explicit, deterministic samples of 1–10 rows with field, value-size, and total-size limits |
 | Graph | Stable technical node and edge identities; atomic local JSON persistence; deterministic revisions |
@@ -56,29 +106,30 @@ contents.
 The runtime core has no mandatory third-party dependency. SQLite uses Python's standard library.
 SQL Server and local embeddings are optional extras.
 
-## Installation from source
+## Installation
 
-TAREL has not been released to PyPI yet. For local development:
+TAREL has not been released to PyPI yet. To use it directly from source:
 
 ```bash
 git clone https://github.com/Mattiascherzgit/tarel.git
 cd tarel
 python3 -m venv .venv
 . .venv/bin/activate
-python -m pip install -e '.[dev]'
+python -m pip install .
 tarel --version
 ```
 
-The current supported target is Python 3.11 or 3.12.
+This installs the dependency-free core. The current supported target is Python 3.11 or 3.12.
+Contributors can use `python -m pip install -e '.[dev]'` instead.
 
 Optional capabilities:
 
 ```bash
 # SQL Server through pymssql
-python -m pip install -e '.[sqlserver]'
+python -m pip install '.[sqlserver]'
 
 # Local CPU embeddings through llama.cpp
-python -m pip install -e '.[local-rag]'
+python -m pip install '.[local-rag]'
 ```
 
 ## Five-minute local demo
@@ -190,6 +241,29 @@ tarel context retail-demo \
 The context result contains graph metadata and proposed joins needed to answer the question. It
 does not execute the analytical aggregation itself.
 
+Conceptually, the agent receives a bounded packet like this:
+
+```text
+STABLE CONTEXT
+graph: retail-demo
+objects:
+  main.F_SLS_01  "Internet sales fact"                 [draft]
+  main.F_SLS_02  "Reseller sales fact"                 [draft]
+  main.D_DATE    "Calendar dimension"                  [validated]
+joins:
+  F_SLS_01.DOC_DT_KEY -> D_DATE.DATE_KEY                [foreign_key]
+  F_SLS_02.RSLR_KEY -> D_RSLR.RSLR_KEY                 [candidate, draft]
+
+DYNAMIC REQUEST
+query: internet and reseller sales by year
+selection: ...
+omissions: ...
+```
+
+This is illustrative rather than copied output; the real text and JSON renderers include stable
+identities, review states, paths, retrieval reasons, budgets, warnings, hashes, and visible
+omissions. Unreviewed proposals may be included, but their state is never hidden.
+
 ### 6. Reproduce schema drift
 
 Save the first packet, replace the local demo source with V2, refresh the graph, and check impact:
@@ -214,10 +288,49 @@ areas, zones, and context packets.
 
 See the complete [Retail DWH walkthrough](docs/retail-demo.md).
 
-## Connectors
+## Teach TAREL a new source
 
-Connectors are small, explicit read-only adapters. They produce normalized observations and never
-mutate a TAREL graph directly.
+The long-term value of TAREL is not a large built-in connector inventory. It is a small connector
+contract that a capable coding agent can implement when it meets a new database or warehouse. The
+same authoring pattern is intended for lakes, document systems, and orchestration platforms as
+their contracts are added.
+
+Start by creating an isolated candidate:
+
+```bash
+tarel connector scaffold postgres \
+  --output .tarel/connectors/postgres-candidate
+```
+
+Then give the coding agent already operating TAREL a concrete instruction:
+
+> Implement the connector described in
+> `.tarel/connectors/postgres-candidate/CONNECTOR_TASK.md`. Use official vendor documentation,
+> keep the driver optional, implement the read-only probe first, record only the required dialect
+> and metadata notes under `references/`, and stop after local tests for human review.
+
+The generated workspace gives the agent:
+
+- an explicit versioned connector contract and capability boundary;
+- an inactive Python adapter with the required entry point;
+- a read-only manifest for dependencies, permissions, dialect, and references;
+- focused authoring and SQL-dialect reference files;
+- rules for secret handling, bounded probes, stable ordering, and visible failures;
+- a completion gate that requires testing against a private source and human review.
+
+The agent may consult current official documentation when a proprietary metadata API or SQL dialect
+is unknown. It can then edit the candidate, install only the source-specific driver, and iterate on
+`probe` and `discover_catalog` using real error output. This is the self-modifying loop: the tool
+provides the contract and evidence boundary; the coding agent supplies the source-specific code.
+
+Today, `scaffold` creates the complete authoring workspace but does not invoke an LLM by itself,
+register the candidate, or execute generated code. Integration and activation are explicit human
+decisions. That gate is intentional: self-extension should remove repetitive integration work,
+not turn unreviewed generated code into trusted infrastructure.
+
+## Connector runtime
+
+Once approved and integrated, every connector uses the same small CLI surface:
 
 ```bash
 tarel connector check NAME
@@ -226,20 +339,9 @@ tarel connector discover NAME --config private.toml --schema SCHEMA
 tarel connector sample NAME --config private.toml --schema SCHEMA --object OBJECT
 ```
 
-The first-party connectors are:
-
-- `sqlite`: standard-library driver, one file/catalog, `main` namespace;
-- `sqlserver`: optional `pymssql` driver, schemas, tables, views, primary and foreign keys, and
-  `MS_Description` metadata.
-
-Scaffold an inactive connector candidate without registering it:
-
-```bash
-tarel connector scaffold postgres --output .tarel/connectors/postgres-candidate
-```
-
-The scaffold contains an agent-readable task, implementation boundary, manifest, and reference
-files. Activation remains a separate human-controlled step.
+Connectors are read-only adapters. They produce normalized observations and never mutate a TAREL
+graph directly. The current distribution includes SQLite and SQL Server as working references for
+the contract, not as the intended limit of the system.
 
 Private connector files use TOML sections matching the connector name. They must remain outside
 Git. Environment variables such as `TAREL_SQLSERVER_URL` can override local URLs.
@@ -421,12 +523,13 @@ Every substantive command supports deterministic JSON output where it is useful.
 ## What TAREL does not do yet
 
 - no stable public SDK;
-- no PostgreSQL, cloud warehouse, lake, document, or orchestration connector yet;
+- the distribution does not yet ship PostgreSQL, cloud warehouse, lake, document, or orchestration
+  connectors; agents can already author database and warehouse candidates;
 - no operational lineage or ETL run history yet;
 - no tested Apache Ossie import/export compatibility yet;
 - no multi-user shared graph store yet;
 - no automatic execution of analytical SQL;
-- no autonomous activation of generated connector code;
+- no autonomous activation of generated connector code -- activation remains a human trust gate;
 - no web UI, catalog server, or mandatory cloud service.
 
 These are scope boundaries, not hidden fallbacks. Unsupported capabilities fail visibly.
