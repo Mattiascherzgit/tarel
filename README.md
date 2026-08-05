@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/Mattiascherzgit/tarel/actions/workflows/ci.yml/badge.svg)](https://github.com/Mattiascherzgit/tarel/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](https://github.com/Mattiascherzgit/tarel/blob/master/LICENSE)
 
 **Give coding agents the right analytics context -- and let them extend the tool when the source is
 new.**
@@ -30,7 +30,7 @@ TAREL is deliberately not another catalog UI, chat application, SQL execution en
 graph server. It is the small layer between a complex analytical estate and an agent's limited
 context window.
 
-> TAREL is pre-alpha software. The CLI and serialized contracts may still change before `0.0.1`.
+> TAREL is pre-alpha software. The CLI and serialized contracts may still change during `0.x`.
 > A stable public SDK, operational lineage, and semantic-standard interoperability are not part of
 > the current release.
 
@@ -108,28 +108,21 @@ SQL Server and local embeddings are optional extras.
 
 ## Installation
 
-TAREL has not been released to PyPI yet. To use it directly from source:
-
 ```bash
-git clone https://github.com/Mattiascherzgit/tarel.git
-cd tarel
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install .
+python -m pip install tarel
 tarel --version
 ```
 
-This installs the dependency-free core. The current supported target is Python 3.11 or 3.12.
-Contributors can use `python -m pip install -e '.[dev]'` instead.
+This installs the dependency-free core. TAREL supports Python 3.11 and 3.12.
 
 Optional capabilities:
 
 ```bash
 # SQL Server through pymssql
-python -m pip install '.[sqlserver]'
+python -m pip install 'tarel[sqlserver]'
 
 # Local CPU embeddings through llama.cpp
-python -m pip install '.[local-rag]'
+python -m pip install 'tarel[local-rag]'
 ```
 
 ## Five-minute local demo
@@ -286,7 +279,7 @@ one declared relationship. Change Radar preserves affected claims, moves validat
 `review_required`, retains removed knowledge as stale claims, and identifies affected workspace
 areas, zones, and context packets.
 
-See the complete [Retail DWH walkthrough](docs/retail-demo.md).
+See the complete [Retail DWH walkthrough](https://github.com/Mattiascherzgit/tarel/blob/master/docs/retail-demo.md).
 
 ## Teach TAREL a new source
 
@@ -408,7 +401,7 @@ technical schema stays available.
 For local vector and hybrid retrieval:
 
 ```bash
-python -m pip install -e '.[local-rag]'
+python -m pip install 'tarel[local-rag]'
 tarel model download
 tarel model status
 tarel index build retail-demo
@@ -418,7 +411,7 @@ tarel search retail-demo "annual online revenue" --mode hybrid
 The embedding model is downloaded only by the explicit command, checksum-verified, and stored in
 the user cache. Models and vector indexes are not included in the repository or package. TAREL
 embeds an allowlist of graph metadata; connection information, sample values, and arbitrary
-provenance are excluded. See [Local retrieval](docs/local-retrieval.md).
+provenance are excluded. See [Local retrieval](https://github.com/Mattiascherzgit/tarel/blob/master/docs/local-retrieval.md).
 
 ## Deterministic context packets
 
@@ -441,7 +434,8 @@ tarel context impact packet-a.json --graph retail-demo
 
 TAREL intentionally emits neutral packet structure rather than provider-specific cache headers,
 TTLs, or session controls. A consuming agent or application can map the stable and dynamic sections
-to its own caching mechanism. See the [context packet contract](docs/context-contract.md).
+to its own caching mechanism. See the
+[context packet contract](https://github.com/Mattiascherzgit/tarel/blob/master/docs/context-contract.md).
 
 ## Workspaces, areas, and zones
 
@@ -471,7 +465,8 @@ tarel workspace zone show enterprise commercial revenue
 ```
 
 Change Radar reports which areas and zones are affected by a graph refresh without rewriting their
-definitions automatically. See [Workspaces, systems, areas, and zones](docs/workspaces.md).
+definitions automatically. See
+[Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md).
 
 ## Local persistence and data boundaries
 
@@ -550,13 +545,15 @@ SQLite demo and the unit suite require no external service.
 
 ## Documentation
 
-- [Retail DWH demo](docs/retail-demo.md)
-- [Change Radar and stale claims](docs/change-radar.md)
-- [Local retrieval](docs/local-retrieval.md)
-- [Context packet contract](docs/context-contract.md)
-- [Workspaces, systems, areas, and zones](docs/workspaces.md)
+- [Retail DWH demo](https://github.com/Mattiascherzgit/tarel/blob/master/docs/retail-demo.md)
+- [Change Radar and stale claims](https://github.com/Mattiascherzgit/tarel/blob/master/docs/change-radar.md)
+- [Local retrieval](https://github.com/Mattiascherzgit/tarel/blob/master/docs/local-retrieval.md)
+- [Context packet contract](https://github.com/Mattiascherzgit/tarel/blob/master/docs/context-contract.md)
+- [Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md)
 
 ## License
 
-TAREL is available under the [MIT License](LICENSE). Optional components and the separately
-downloaded embedding model are listed in the [third-party notices](THIRD_PARTY_NOTICES.md).
+TAREL is available under the
+[MIT License](https://github.com/Mattiascherzgit/tarel/blob/master/LICENSE). Optional components and
+the separately downloaded embedding model are listed in the
+[third-party notices](https://github.com/Mattiascherzgit/tarel/blob/master/THIRD_PARTY_NOTICES.md).

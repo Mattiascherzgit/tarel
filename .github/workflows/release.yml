@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and verify release
+    if: startsWith(github.event.release.tag_name, 'v')
+    runs-on: ubuntu-latest
+    env:
+      SOURCE_DATE_EPOCH: "1580601600"
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install release tooling
+        run: python -m pip install "build>=1.2,<2" "twine>=6,<7"
+      - name: Verify release identity
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import tomllib
+
+          with open("pyproject.toml", "rb") as handle:
+              project_version = tomllib.load(handle)["project"]["version"]
+
+          sys.path.insert(0, "src")
+          from tarel import __version__
+
+          tag_version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          if not tag_version or tag_version != project_version or project_version != __version__:
+              raise SystemExit(
+                  f"Release identity mismatch: tag={tag_version!r}, "
+                  f"project={project_version!r}, package={__version__!r}"
+              )
+          if ".dev" in project_version:
+              raise SystemExit("Development versions cannot be published as stable releases.")
+          PY
+      - name: Build distributions
+        run: python -m build
+      - name: Validate metadata and contents
+        run: |
+          python -m twine check --strict dist/*
+          python tools/check_distribution.py dist
+      - name: Smoke-test wheel
+        run: |
+          python -m venv "${{ runner.temp }}/tarel-release"
+          "${{ runner.temp }}/tarel-release/bin/python" -m pip install --no-deps dist/*.whl
+          mkdir -p "${{ runner.temp }}/tarel-smoke"
+          cd "${{ runner.temp }}/tarel-smoke"
+          "${{ runner.temp }}/tarel-release/bin/tarel" --version
+          "${{ runner.temp }}/tarel-release/bin/tarel" demo create retail-dwh
+          "${{ runner.temp }}/tarel-release/bin/tarel" connector probe sqlite --config .tarel/demos/retail-dwh.toml --format json > probe.json
+          "${{ runner.temp }}/tarel-release/bin/tarel" graph build retail-demo --connector sqlite --config .tarel/demos/retail-dwh.toml --schema main --format json > graph.json
+          "${{ runner.temp }}/tarel-release/bin/python" -c 'import json; assert json.load(open("probe.json"))["read_only"] is True'
+          "${{ runner.temp }}/tarel-release/bin/python" -c 'import json; assert json.load(open("graph.json"))["nodes"] == 70'
+      - name: Upload verified distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-distributions
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/tarel/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download verified distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: python-distributions
+          path: dist/
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
