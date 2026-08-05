@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tarel"
-version = "0.0.1.dev0"
-description = "A minimal analytics context compiler for coding agents."
+version = "0.0.1"
+description = "A local-first analytics context compiler for coding agents."
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "MPS" }]
@@ -54,6 +54,25 @@ tarel = "tarel.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tarel"]
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "CONTRIBUTING.md",
+  "LICENSE",
+  "README.md",
+  "SECURITY.md",
+  "THIRD_PARTY_NOTICES.md",
+  "docs/change-radar.md",
+  "docs/context-contract.md",
+  "docs/local-retrieval.md",
+  "docs/retail-demo.md",
+  "docs/workspaces.md",
+  "pyproject.toml",
+  "src",
+  "tests",
+  "tools/check_distribution.py",
+  "uv.lock",
+]
 
 [tool.hatch.build]
 exclude = [

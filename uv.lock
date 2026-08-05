@@ -354,7 +354,7 @@ wheels = [
 
 [[package]]
 name = "tarel"
-version = "0.0.1.dev0"
+version = "0.0.1"
 source = { editable = "." }
 
 [package.optional-dependencies]
