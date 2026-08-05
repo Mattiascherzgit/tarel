@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.coverage
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+.tarel/
+*.gguf
+build/
+dist/
+htmlcov/
+*.log
+.env
+.env.*
+!.env.example
+
+# Local integration-test credentials and database targets.
+tests/local_databases.toml

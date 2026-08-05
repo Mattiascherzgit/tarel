@@ -1,0 +1,175 @@
+graph = "adventureworks_dw"
+catalog = "AdventureWorksDW2025"
+namespace = "dbo"
+
+# This corpus checks retrieval, not query generation. Expected relationships are
+# declared source foreign keys and are verified separately with read-only counts.
+
+[[cases]]
+id = "internet_sales_currency"
+question = "Which objects describe internet sales revenue by currency?"
+query = "internet sales amount currency"
+primary_object = "dbo.FactInternetSales"
+supporting_objects = ["dbo.DimCurrency"]
+required_fields = [
+  "dbo.FactInternetSales.SalesAmount",
+  "dbo.FactInternetSales.CurrencyKey",
+  "dbo.DimCurrency.CurrencyName",
+]
+relationships = [
+  "dbo.FactInternetSales.CurrencyKey -> dbo.DimCurrency.CurrencyKey",
+]
+
+[[cases]]
+id = "reseller_sales_employee"
+question = "Which objects describe reseller sales by employee?"
+query = "reseller sales amount employee"
+primary_object = "dbo.FactResellerSales"
+supporting_objects = ["dbo.DimEmployee"]
+required_fields = [
+  "dbo.FactResellerSales.SalesAmount",
+  "dbo.FactResellerSales.EmployeeKey",
+  "dbo.DimEmployee.FirstName",
+  "dbo.DimEmployee.LastName",
+]
+relationships = [
+  "dbo.FactResellerSales.EmployeeKey -> dbo.DimEmployee.EmployeeKey",
+]
+
+[[cases]]
+id = "product_hierarchy"
+question = "Which objects organize products by subcategory and category?"
+query = "product subcategory category name"
+primary_object = "dbo.DimProduct"
+supporting_objects = ["dbo.DimProductSubcategory", "dbo.DimProductCategory"]
+required_fields = [
+  "dbo.DimProduct.EnglishProductName",
+  "dbo.DimProduct.ProductSubcategoryKey",
+  "dbo.DimProductSubcategory.EnglishProductSubcategoryName",
+  "dbo.DimProductSubcategory.ProductCategoryKey",
+  "dbo.DimProductCategory.EnglishProductCategoryName",
+]
+relationships = [
+  "dbo.DimProduct.ProductSubcategoryKey -> dbo.DimProductSubcategory.ProductSubcategoryKey",
+  "dbo.DimProductSubcategory.ProductCategoryKey -> dbo.DimProductCategory.ProductCategoryKey",
+]
+
+[[cases]]
+id = "customer_geography"
+question = "Which objects locate customers by city and sales territory?"
+query = "customer city sales territory"
+primary_object = "dbo.DimCustomer"
+supporting_objects = ["dbo.DimGeography", "dbo.DimSalesTerritory"]
+required_fields = [
+  "dbo.DimCustomer.CustomerKey",
+  "dbo.DimCustomer.GeographyKey",
+  "dbo.DimGeography.City",
+  "dbo.DimGeography.SalesTerritoryKey",
+  "dbo.DimSalesTerritory.SalesTerritoryRegion",
+]
+relationships = [
+  "dbo.DimCustomer.GeographyKey -> dbo.DimGeography.GeographyKey",
+  "dbo.DimGeography.SalesTerritoryKey -> dbo.DimSalesTerritory.SalesTerritoryKey",
+]
+
+[[cases]]
+id = "promotion_discount"
+question = "Which objects connect promotion discounts with internet sales?"
+query = "promotion discount internet sales amount"
+primary_object = "dbo.FactInternetSales"
+supporting_objects = ["dbo.DimPromotion"]
+required_fields = [
+  "dbo.FactInternetSales.PromotionKey",
+  "dbo.FactInternetSales.SalesAmount",
+  "dbo.DimPromotion.EnglishPromotionName",
+  "dbo.DimPromotion.DiscountPct",
+]
+relationships = [
+  "dbo.FactInternetSales.PromotionKey -> dbo.DimPromotion.PromotionKey",
+]
+
+[[cases]]
+id = "internet_sales_calendar"
+question = "Which objects aggregate internet sales by calendar month and year?"
+query = "internet sales amount calendar month year"
+primary_object = "dbo.FactInternetSales"
+supporting_objects = ["dbo.DimDate"]
+required_fields = [
+  "dbo.FactInternetSales.OrderDateKey",
+  "dbo.FactInternetSales.SalesAmount",
+  "dbo.DimDate.EnglishMonthName",
+  "dbo.DimDate.CalendarYear",
+]
+relationships = [
+  "dbo.FactInternetSales.OrderDateKey -> dbo.DimDate.DateKey",
+]
+
+[[cases]]
+id = "finance_account_scenario"
+question = "Which objects describe financial amounts by account and scenario?"
+query = "finance amount account scenario"
+primary_object = "dbo.FactFinance"
+supporting_objects = ["dbo.DimAccount", "dbo.DimScenario"]
+required_fields = [
+  "dbo.FactFinance.Amount",
+  "dbo.FactFinance.AccountKey",
+  "dbo.FactFinance.ScenarioKey",
+  "dbo.DimAccount.AccountDescription",
+  "dbo.DimScenario.ScenarioName",
+]
+relationships = [
+  "dbo.FactFinance.AccountKey -> dbo.DimAccount.AccountKey",
+  "dbo.FactFinance.ScenarioKey -> dbo.DimScenario.ScenarioKey",
+]
+
+[[cases]]
+id = "sales_quota_employee"
+question = "Which objects describe employee sales quota by calendar quarter?"
+query = "employee sales quota calendar quarter"
+primary_object = "dbo.FactSalesQuota"
+supporting_objects = ["dbo.DimEmployee", "dbo.DimDate"]
+required_fields = [
+  "dbo.FactSalesQuota.SalesAmountQuota",
+  "dbo.FactSalesQuota.EmployeeKey",
+  "dbo.FactSalesQuota.DateKey",
+  "dbo.DimDate.CalendarQuarter",
+]
+relationships = [
+  "dbo.FactSalesQuota.EmployeeKey -> dbo.DimEmployee.EmployeeKey",
+  "dbo.FactSalesQuota.DateKey -> dbo.DimDate.DateKey",
+]
+
+[[cases]]
+id = "product_inventory"
+question = "Which objects show product inventory balance by date?"
+query = "product inventory units balance date"
+primary_object = "dbo.FactProductInventory"
+supporting_objects = ["dbo.DimProduct", "dbo.DimDate"]
+required_fields = [
+  "dbo.FactProductInventory.UnitsBalance",
+  "dbo.FactProductInventory.ProductKey",
+  "dbo.FactProductInventory.DateKey",
+  "dbo.DimProduct.EnglishProductName",
+]
+relationships = [
+  "dbo.FactProductInventory.ProductKey -> dbo.DimProduct.ProductKey",
+  "dbo.FactProductInventory.DateKey -> dbo.DimDate.DateKey",
+]
+
+[[cases]]
+id = "currency_rate"
+question = "Which objects contain currency exchange rates by date?"
+query = "currency average end of day rate date"
+primary_object = "dbo.FactCurrencyRate"
+supporting_objects = ["dbo.DimCurrency", "dbo.DimDate"]
+required_fields = [
+  "dbo.FactCurrencyRate.AverageRate",
+  "dbo.FactCurrencyRate.EndOfDayRate",
+  "dbo.FactCurrencyRate.CurrencyKey",
+  "dbo.FactCurrencyRate.DateKey",
+  "dbo.DimCurrency.CurrencyName",
+]
+relationships = [
+  "dbo.FactCurrencyRate.CurrencyKey -> dbo.DimCurrency.CurrencyKey",
+  "dbo.FactCurrencyRate.DateKey -> dbo.DimDate.DateKey",
+]

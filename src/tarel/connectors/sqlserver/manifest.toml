@@ -1,0 +1,12 @@
+[connector]
+contract_version = 1
+name = "sqlserver"
+version = "0.0.1"
+source_type = "sqlserver"
+entrypoint = "tarel.connectors.sqlserver.connector:create_connector"
+extra = "sqlserver"
+capabilities = ["probe", "discover_catalog", "sample_rows", "probe_relationships"]
+dependencies = ["pymssql"]
+permissions = ["read"]
+dialect = "tsql"
+references = ["references/authoring.md", "references/dialect.md"]

@@ -1,0 +1,12 @@
+[connector]
+contract_version = 1
+name = "sqlite"
+version = "0.0.1"
+source_type = "sqlite"
+entrypoint = "tarel.connectors.sqlite.connector:create_connector"
+extra = "sqlite"
+capabilities = ["probe", "discover_catalog", "sample_rows", "probe_relationships"]
+dependencies = []
+permissions = ["read"]
+dialect = "sqlite"
+references = ["references/authoring.md", "references/dialect.md"]
