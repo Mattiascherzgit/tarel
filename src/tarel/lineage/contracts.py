@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-_CONTRACT_VERSION = "tarel.lineage.v0.2"
+_CONTRACT_VERSION = "tarel.lineage.v0.3"
+_READABLE_CONTRACT_VERSIONS = frozenset({_CONTRACT_VERSION, "tarel.lineage.v0.2"})
 _DEFINITION_KINDS = frozenset({"procedure", "query", "script"})
 _OPERATIONS = frozenset({"call", "read"})
 _WRITE_OPERATIONS = frozenset({"delete", "insert", "merge", "select_into", "truncate", "update"})
@@ -13,7 +14,7 @@ _SOURCE_ROLES = frozenset(
     {"audit", "business_data", "control", "deduplication", "filter", "lookup", "unknown"}
 )
 _EXCLUSION_KINDS = frozenset({"dynamic_sql", "local_intermediate", "unresolved"})
-_STATES = frozenset({"draft", "rejected", "validated"})
+_STATES = frozenset({"draft", "rejected", "review_required", "validated"})
 
 
 class LineageFailure(RuntimeError):
@@ -145,6 +146,24 @@ class LineageAnalysis:
 
 
 @dataclass(frozen=True, slots=True)
+class LineageAnalysisFailure:
+    definition_id: str
+    definition_revision: str
+    code: str
+    provider: str
+    model: str | None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "code": self.code,
+            "definition_id": self.definition_id,
+            "definition_revision": self.definition_revision,
+            "model": self.model,
+            "provider": self.provider,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class LineageClaim:
     id: str
     definition_id: str
@@ -204,6 +223,7 @@ class LineageDocument:
     definitions: tuple[LineageDefinition, ...]
     steps: tuple[LineageStep, ...]
     analyses: tuple[LineageAnalysis, ...] = ()
+    analysis_failures: tuple[LineageAnalysisFailure, ...] = ()
     claims: tuple[LineageClaim, ...] = ()
     write_units: tuple[LineageWriteUnit, ...] = ()
     contract_version: str = _CONTRACT_VERSION
@@ -216,6 +236,7 @@ class LineageDocument:
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "analysis_failures": [item.to_dict() for item in self.analysis_failures],
             "analyses": [item.to_dict() for item in self.analyses],
             "claims": [item.to_dict() for item in self.claims],
             "contract_version": self.contract_version,
@@ -233,9 +254,15 @@ class LineageDocument:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> LineageDocument:
+        contract_version = data.get("contract_version")
+        if contract_version not in _READABLE_CONTRACT_VERSIONS:
+            raise LineageFailure("unsupported_lineage", "Unsupported TAREL lineage contract.")
+        if contract_version == "tarel.lineage.v0.2":
+            data = {**data, "analysis_failures": []}
         _fields(
             data,
             {
+                "analysis_failures",
                 "analyses",
                 "claims",
                 "contract_version",
@@ -252,8 +279,6 @@ class LineageDocument:
             },
             "document",
         )
-        if data.get("contract_version") != _CONTRACT_VERSION:
-            raise LineageFailure("unsupported_lineage", "Unsupported TAREL lineage contract.")
         try:
             document = cls(
                 name=_text_value(data.get("name"), "name"),
@@ -269,6 +294,10 @@ class LineageDocument:
                 steps=tuple(_step(item) for item in _objects(data.get("steps"), "steps")),
                 analyses=tuple(
                     _analysis(item) for item in _objects(data.get("analyses"), "analyses")
+                ),
+                analysis_failures=tuple(
+                    _analysis_failure(item)
+                    for item in _objects(data.get("analysis_failures"), "analysis failures")
                 ),
                 claims=tuple(_claim(item) for item in _objects(data.get("claims"), "claims")),
                 write_units=tuple(
@@ -364,6 +393,32 @@ def validate_lineage_document(document: LineageDocument) -> None:
             _validate_evidence(excluded.evidence)
         analysis_ids.append(item.definition_id)
     _unique(analysis_ids, "analysis definition IDs")
+
+    failure_ids: list[str] = []
+    for item in document.analysis_failures:
+        _text_value(item.definition_id, "analysis failure definition_id")
+        if item.definition_id not in definitions:
+            raise LineageFailure(
+                "invalid_lineage",
+                "Analysis failure references an unknown definition.",
+            )
+        _sha256(item.definition_revision, "analysis failure definition_revision")
+        if item.definition_revision != definitions[item.definition_id].revision:
+            raise LineageFailure(
+                "invalid_lineage",
+                "Analysis failure revision does not match its lineage definition.",
+            )
+        _text_value(item.code, "analysis failure code")
+        _text_value(item.provider, "analysis failure provider")
+        if item.model is not None:
+            _text_value(item.model, "analysis failure model")
+        failure_ids.append(item.definition_id)
+    _unique(failure_ids, "analysis failure definition IDs")
+    if set(failure_ids) & set(analysis_ids):
+        raise LineageFailure(
+            "invalid_lineage",
+            "A definition cannot be both analyzed and failed.",
+        )
 
     claim_ids: list[str] = []
     for item in document.claims:
@@ -476,6 +531,24 @@ def _analysis(data: dict[str, Any]) -> LineageAnalysis:
             _excluded_write(item)
             for item in _objects(data.get("excluded_writes"), "excluded_writes")
         ),
+    )
+
+
+def _analysis_failure(data: dict[str, Any]) -> LineageAnalysisFailure:
+    _fields(
+        data,
+        {"code", "definition_id", "definition_revision", "model", "provider"},
+        "analysis failure",
+    )
+    model = data.get("model")
+    if model is not None and not isinstance(model, str):
+        raise LineageFailure("invalid_lineage", "Analysis failure model must be a string or null.")
+    return LineageAnalysisFailure(
+        definition_id=data.get("definition_id"),
+        definition_revision=data.get("definition_revision"),
+        code=data.get("code"),
+        provider=data.get("provider"),
+        model=model,
     )
 
 

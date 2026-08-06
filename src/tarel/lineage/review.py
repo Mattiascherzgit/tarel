@@ -21,8 +21,12 @@ def list_lineage_items(
     *,
     states: frozenset[str] | None = None,
 ) -> tuple[LineageReviewItem, ...]:
-    selected = frozenset({"draft", "rejected", "validated"}) if states is None else states
-    unknown = selected - {"draft", "rejected", "validated"}
+    selected = (
+        frozenset({"draft", "rejected", "review_required", "validated"})
+        if states is None
+        else states
+    )
+    unknown = selected - {"draft", "rejected", "review_required", "validated"}
     if unknown or not selected:
         raise LineageFailure("invalid_lineage_review", "Invalid lineage review-state filter.")
     items = (*document.claims, *document.write_units)

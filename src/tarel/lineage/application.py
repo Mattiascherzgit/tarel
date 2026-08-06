@@ -8,6 +8,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from tarel.lineage.analysis_cache import (
+    FileLineageAnalysisCache,
+    LineageAnalysisCacheIdentity,
+)
+from tarel.lineage.change_store import FileLineageChangeStore
 from tarel.lineage.contracts import LineageDocument, LineageFailure
 from tarel.lineage.core import (
     ProcessStep,
@@ -15,13 +20,21 @@ from tarel.lineage.core import (
     apply_lineage_proposal,
     build_lineage,
     process_view,
+    record_lineage_analysis_failure,
     table_lineage,
 )
+from tarel.lineage.refresh import LineageRefreshReport, refresh_lineage
 from tarel.lineage.review import LineageReviewItem, decide_lineage_item, list_lineage_items
 from tarel.lineage.source import LineageInput, load_lineage_input
+from tarel.lineage.status import LineageStatus, lineage_status
 from tarel.lineage.store import FileLineageStore
-from tarel.lineage.tasks import LineageTask, plan_lineage_tasks
-from tarel.providers.contracts import Message, StructuredProvider, StructuredRequest
+from tarel.lineage.tasks import LineageTask, lineage_analyzer_version, plan_lineage_tasks
+from tarel.providers.contracts import (
+    Message,
+    ProviderFailure,
+    StructuredProvider,
+    StructuredRequest,
+)
 from tarel.providers.host import load_provider
 
 
@@ -29,6 +42,8 @@ from tarel.providers.host import load_provider
 class LineageChangeResult:
     document: LineageDocument
     path: Path
+    report: LineageRefreshReport | None = None
+    report_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +61,8 @@ class LineageProviderRunResult:
     model: str | None
     planned: int
     applied: int
+    cache_hits: int
+    provider_requests: int
 
 
 def build_lineage_use_case(name: str, *, source_path: Path) -> LineageChangeResult:
@@ -53,12 +70,16 @@ def build_lineage_use_case(name: str, *, source_path: Path) -> LineageChangeResu
     source = load_lineage_input(source_path)
     if store.exists(name):
         document = store.load(name)
-        if document.source_revision != source.revision:
-            raise LineageFailure(
-                "lineage_source_changed",
-                "Lineage input changed. Refresh semantics are not implemented yet.",
-            )
-        return LineageChangeResult(document, store.path(name))
+        if document.source_revision == source.revision:
+            return LineageChangeResult(document, store.path(name))
+        refreshed, report = refresh_lineage(document, source)
+        report_path = FileLineageChangeStore(store.root).save(name, report)
+        return LineageChangeResult(
+            refreshed,
+            store.save(refreshed),
+            report,
+            report_path,
+        )
     document = build_lineage(name, source)
     return LineageChangeResult(document, store.save(document))
 
@@ -143,8 +164,13 @@ def run_lineage_provider_use_case(
     tasks = plan_lineage_tasks(document, source)
     selected = tasks[:limit] if limit is not None else tasks
     provider = load_provider(provider_name, timeout=timeout)
+    cache = FileLineageAnalysisCache()
     applied = 0
+    cache_hits = 0
+    provider_requests = 0
     path = store.path(name)
+    definitions = source.definition_by_id()
+    effective_model = model or provider.default_model
     for task_number, task in enumerate(selected, 1):
         _report(progress, f"definition {task_number}/{len(selected)}: {task.definition_name}")
         request = replace(
@@ -159,40 +185,75 @@ def run_lineage_provider_use_case(
                 reasoning_effort if reasoning_effort is not None else task.request.reasoning_effort
             ),
         )
-        _report(progress, "  extraction pass")
-        response, candidate = _generate_valid_workfile(
-            document,
-            source,
-            task,
-            provider,
-            request,
-            retry=retry,
+        definition = definitions[task.definition_id]
+        identity = LineageAnalysisCacheIdentity(
+            content_hash=definition.content_hash,
+            definition_kind=definition.kind,
+            language=definition.language,
+            analyzer_version=lineage_analyzer_version(),
+            provider=provider.name,
+            model=effective_model,
+            review_passes=review_passes,
+            max_output_tokens=request.max_output_tokens,
+            reasoning_effort=request.reasoning_effort,
         )
-        for review_number in range(1, review_passes + 1):
-            _report(progress, f"  audit pass {review_number}/{review_passes}")
-            audit = replace(
-                request,
-                messages=(
-                    *task.request.messages,
-                    Message(
-                        "user",
-                        "AUDIT PASS: Re-read the complete source and inspect the draft workfile "
-                        "below. Return a corrected complete workfile. For every persistent write, "
-                        "check every FROM, JOIN, APPLY, EXISTS, and NOT EXISTS source, trace "
-                        "temporary intermediates backwards, verify source roles, remove non-object "
-                        "observations, and account for every coverage marker.\n\nDRAFT WORKFILE:\n"
-                        + json.dumps(response, ensure_ascii=False, sort_keys=True),
-                    ),
-                ),
-            )
-            response, candidate = _generate_valid_workfile(
+        try:
+            cached = cache.load(identity)
+            if cached is not None:
+                _report(progress, "  cache hit")
+                candidate = _apply_cached_workfile(document, source, task, cached)
+                response = cached
+                cache_hits += 1
+            else:
+                _report(progress, "  extraction pass")
+                response, candidate, requests = _generate_valid_workfile(
+                    document,
+                    source,
+                    task,
+                    provider,
+                    request,
+                    retry=retry,
+                )
+                provider_requests += requests
+                for review_number in range(1, review_passes + 1):
+                    _report(progress, f"  audit pass {review_number}/{review_passes}")
+                    audit = replace(
+                        request,
+                        messages=(
+                            *task.request.messages,
+                            Message(
+                                "user",
+                                "AUDIT PASS: Re-read the complete source and inspect the draft "
+                                "workfile below. Return a corrected complete workfile. For every "
+                                "persistent write, check every FROM, JOIN, APPLY, EXISTS, and NOT "
+                                "EXISTS source, trace temporary intermediates backwards, verify "
+                                "source roles, remove non-object observations, and account for "
+                                "every coverage marker.\n\nDRAFT WORKFILE:\n"
+                                + json.dumps(response, ensure_ascii=False, sort_keys=True),
+                            ),
+                        ),
+                    )
+                    response, candidate, requests = _generate_valid_workfile(
+                        document,
+                        source,
+                        task,
+                        provider,
+                        audit,
+                        retry=retry,
+                    )
+                    provider_requests += requests
+                cache.save(identity, response)
+        except (LineageFailure, ProviderFailure) as exc:
+            document = record_lineage_analysis_failure(
                 document,
-                source,
-                task,
-                provider,
-                audit,
-                retry=retry,
+                task.definition_id,
+                code=exc.code,
+                provider=provider.name,
+                model=effective_model,
             )
+            path = store.save(document)
+            _report(progress, f"  failed [{exc.code}]")
+            raise
         document = candidate
         path = store.save(document)
         applied += 1
@@ -201,9 +262,11 @@ def run_lineage_provider_use_case(
         document=document,
         path=path,
         provider=provider.name,
-        model=model or provider.default_model,
+        model=effective_model,
         planned=len(selected),
         applied=applied,
+        cache_hits=cache_hits,
+        provider_requests=provider_requests,
     )
 
 
@@ -215,7 +278,7 @@ def _generate_valid_workfile(
     request: StructuredRequest,
     *,
     retry: int,
-) -> tuple[dict[str, object], LineageDocument]:
+) -> tuple[dict[str, object], LineageDocument, int]:
     current_request = request
     for attempt in range(retry + 1):
         response = provider.generate_structured(current_request)
@@ -244,8 +307,31 @@ def _generate_valid_workfile(
                 ),
             )
             continue
-        return response, candidate
+        return response, candidate, attempt + 1
     raise AssertionError("unreachable provider retry loop")
+
+
+def _apply_cached_workfile(
+    document: LineageDocument,
+    source: LineageInput,
+    task: LineageTask,
+    analysis: dict[str, object],
+) -> LineageDocument:
+    try:
+        return apply_lineage_proposal(
+            document,
+            source,
+            {
+                "analysis": analysis,
+                "definition_id": task.definition_id,
+                "task_id": task.id,
+            },
+        )
+    except LineageFailure as exc:
+        raise LineageFailure(
+            "invalid_lineage_analysis_cache",
+            "Cached lineage analysis no longer passes deterministic validation.",
+        ) from exc
 
 
 def _report(progress: Callable[[str], None] | None, message: str) -> None:
@@ -259,3 +345,7 @@ def process_lineage_view_use_case(name: str) -> tuple[ProcessStep, ...]:
 
 def table_lineage_view_use_case(name: str) -> tuple[TableLineage, ...]:
     return table_lineage(FileLineageStore().load(name))
+
+
+def lineage_status_use_case(name: str) -> LineageStatus:
+    return lineage_status(FileLineageStore().load(name))

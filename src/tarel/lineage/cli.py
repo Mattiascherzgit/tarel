@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 
 from tarel.lineage.application import (
+    LineageChangeResult,
     apply_lineage_proposal_use_case,
     build_lineage_use_case,
     decide_lineage_item_use_case,
+    lineage_status_use_case,
     list_lineage_items_use_case,
     load_lineage_use_case,
     next_lineage_task_use_case,
@@ -20,6 +22,7 @@ from tarel.lineage.application import (
     table_lineage_view_use_case,
 )
 from tarel.lineage.contracts import LineageFailure
+from tarel.lineage.status import lineage_status
 
 
 def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -29,14 +32,24 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
     )
     commands = lineage.add_subparsers(dest="lineage_command")
 
-    build = commands.add_parser("build", help="Build lineage from a canonical input file.")
+    build = commands.add_parser(
+        "build",
+        help="Create or refresh lineage from a canonical input file.",
+    )
     build.add_argument("name")
     build.add_argument("--source", required=True, type=Path)
     _format(build)
 
-    show = commands.add_parser("show", help="Show the document, process, or table projection.")
+    show = commands.add_parser(
+        "show",
+        help="Show the document, process, table, or coverage projection.",
+    )
     show.add_argument("name")
-    show.add_argument("--view", choices=("document", "process", "tables"), default="document")
+    show.add_argument(
+        "--view",
+        choices=("document", "process", "status", "tables"),
+        default="document",
+    )
     _format(show)
 
     next_task = commands.add_parser(
@@ -76,7 +89,11 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
     review.add_argument("item_id", nargs="?")
     review.add_argument("--decision", choices=("validate", "reject"))
     review.add_argument("--reason")
-    review.add_argument("--state", action="append", choices=("draft", "validated", "rejected"))
+    review.add_argument(
+        "--state",
+        action="append",
+        choices=("draft", "review_required", "validated", "rejected"),
+    )
     _format(review)
 
 
@@ -86,7 +103,7 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
     command = args.lineage_command
     if command == "build":
         result = build_lineage_use_case(args.name, source_path=args.source)
-        payload = {"lineage": result.document.to_dict(), "path": str(result.path)}
+        payload = _document_change_payload(result)
         _render_document_change(payload, output_format=args.format)
         return 0
     if command == "show":
@@ -96,10 +113,12 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
             payload = {
                 "process": [item.to_dict() for item in process_lineage_view_use_case(args.name)]
             }
-        else:
+        elif args.view == "tables":
             payload = {
                 "tables": [item.to_dict() for item in table_lineage_view_use_case(args.name)]
             }
+        else:
+            payload = lineage_status_use_case(args.name).to_dict()
         _render_view(payload, args.view, output_format=args.format)
         return 0
     if command == "next":
@@ -113,7 +132,7 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
             source_path=args.source,
             payload=_read_json_object(args.input),
         )
-        payload = {"lineage": result.document.to_dict(), "path": str(result.path)}
+        payload = _document_change_payload(result)
         _render_document_change(payload, output_format=args.format)
         return 0
     if command == "analyze":
@@ -136,11 +155,13 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
         )
         payload = {
             "applied": result.applied,
+            "cache_hits": result.cache_hits,
             "lineage": result.document.name,
             "model": result.model,
             "path": str(result.path),
             "planned": result.planned,
             "provider": result.provider,
+            "provider_requests": result.provider_requests,
             "write_units": len(result.document.write_units),
         }
         if args.format == "json":
@@ -148,6 +169,10 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
         else:
             print(f"Analyzed {result.applied}/{result.planned} definitions.")
             print(f"Provider: {result.provider}; model: {result.model}")
+            print(
+                f"Cache hits: {result.cache_hits}; provider requests: "
+                f"{result.provider_requests}"
+            )
             print(f"Write units: {len(result.document.write_units)}")
             print(f"Path: {result.path}")
         return 0
@@ -197,6 +222,18 @@ def _format(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=("text", "json"), default="text")
 
 
+def _document_change_payload(result: LineageChangeResult) -> dict[str, object]:
+    payload = {
+        "lineage": result.document.to_dict(),
+        "path": str(result.path),
+        "status": lineage_status(result.document).to_dict(),
+    }
+    if result.report is not None:
+        payload["change_report"] = result.report.to_dict()
+        payload["change_report_path"] = str(result.report_path)
+    return payload
+
+
 def _render_document_change(payload: dict[str, object], *, output_format: str) -> None:
     if output_format == "json":
         print(json.dumps(payload, indent=2, sort_keys=True))
@@ -208,6 +245,22 @@ def _render_document_change(payload: dict[str, object], *, output_format: str) -
         print(f"Steps: {len(lineage['steps'])}")
         print(f"Claims: {len(lineage['claims'])}")
         print(f"Write units: {len(lineage['write_units'])}")
+    status = payload.get("status")
+    if isinstance(status, dict):
+        coverage = status.get("analysis_coverage")
+        if isinstance(coverage, dict):
+            print(
+                "Analysis: "
+                f"{coverage['complete']} complete, {coverage['failed']} failed, "
+                f"{coverage['pending']} pending"
+            )
+    report = payload.get("change_report")
+    if isinstance(report, dict):
+        print(
+            f"Refresh: {len(report['changes'])} changes; "
+            f"{len(report['stale_items'])} stale items"
+        )
+        print(f"Change report: {payload['change_report_path']}")
     print(f"Path: {payload['path']}")
 
 
@@ -216,6 +269,9 @@ def _render_view(payload: object, view: str, *, output_format: str) -> None:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     if not isinstance(payload, dict):
+        return
+    if view == "status":
+        _render_status(payload)
         return
     rows = payload.get(view)
     if not isinstance(rows, list):
@@ -233,3 +289,32 @@ def _render_view(payload: object, view: str, *, output_format: str) -> None:
             )
         else:
             print(f"- {row['id']}: {row['operation']} {row['target']} [{row['state']}]")
+
+
+def _render_status(payload: dict[str, object]) -> None:
+    coverage = payload.get("analysis_coverage")
+    if isinstance(coverage, dict):
+        print(f"Lineage: {payload['lineage']}")
+        print(
+            "Analysis: "
+            f"{coverage['complete']} complete, {coverage['failed']} failed, "
+            f"{coverage['pending']} pending / {coverage['total']} total"
+        )
+    definitions = payload.get("definitions")
+    if not isinstance(definitions, list):
+        return
+    for item in definitions:
+        if not isinstance(item, dict):
+            continue
+        claims = item["claims"]
+        writes = item["write_units"]
+        failure = item.get("failure")
+        failure_text = (
+            f" [{failure['code']}]" if isinstance(failure, dict) else ""
+        )
+        print(
+            f"- {item['definition_name']}: {item['analysis_state']}{failure_text}; "
+            f"observations={claims['total']}; writes={writes['total']} "
+            f"(draft={writes['draft']}, review_required={writes['review_required']}, "
+            f"validated={writes['validated']}, rejected={writes['rejected']})"
+        )

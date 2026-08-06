@@ -12,6 +12,7 @@ from tarel.lineage.source import LineageInput, SourceDefinition
 from tarel.providers.contracts import Message, StructuredRequest
 
 _TASK_VERSION = "tarel.lineage-task.v0.2"
+_ANALYZER_VERSION = "tarel.lineage-analyzer.v0.1"
 _LINEAGE_MAX_OUTPUT_TOKENS = 24_000
 
 
@@ -221,9 +222,14 @@ def lineage_analysis_schema() -> dict[str, object]:
     }
 
 
+def lineage_analyzer_version() -> str:
+    """Version the prompt, schema, and deterministic validation used by the cache."""
+    return _ANALYZER_VERSION
+
+
 def require_current_source(document: LineageDocument, source: LineageInput) -> None:
     if document.source_revision != source.revision:
         raise LineageFailure(
             "lineage_source_changed",
-            "Lineage input changed. Refresh semantics are not implemented yet.",
+            "Lineage input changed. Run `tarel lineage build` with the current source first.",
         )

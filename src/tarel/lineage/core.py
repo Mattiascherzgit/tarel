@@ -8,6 +8,7 @@ from typing import Any
 
 from tarel.lineage.contracts import (
     LineageAnalysis,
+    LineageAnalysisFailure,
     LineageClaim,
     LineageDefinition,
     LineageDocument,
@@ -191,7 +192,9 @@ def apply_lineage_proposal(
     _reject_duplicates(proposed_claims, proposed_units, excluded)
     _validate_write_coverage(definition, proposed_units, excluded)
     if any(
-        item.definition_id == definition_id and item.reviews
+        item.definition_id == definition_id
+        and item.reviews
+        and item.state != "review_required"
         for item in (*document.claims, *document.write_units)
     ):
         raise LineageFailure(
@@ -216,8 +219,48 @@ def apply_lineage_proposal(
     updated = replace(
         document,
         analyses=tuple(sorted(analyses, key=lambda item: item.definition_id)),
+        analysis_failures=tuple(
+            item for item in document.analysis_failures if item.definition_id != definition_id
+        ),
         claims=tuple(sorted(claims, key=lambda item: item.id)),
         write_units=tuple(sorted(write_units, key=lambda item: item.id)),
+    )
+    validate_lineage_document(updated)
+    return updated
+
+
+def record_lineage_analysis_failure(
+    document: LineageDocument,
+    definition_id: str,
+    *,
+    code: str,
+    provider: str,
+    model: str | None,
+) -> LineageDocument:
+    definition = document.definition_by_id().get(definition_id)
+    if definition is None:
+        raise LineageFailure(
+            "invalid_lineage_analysis_failure",
+            f"Unknown lineage definition: {definition_id}",
+        )
+    failures = [
+        item for item in document.analysis_failures if item.definition_id != definition_id
+    ]
+    failures.append(
+        LineageAnalysisFailure(
+            definition_id=definition_id,
+            definition_revision=definition.revision,
+            code=code,
+            provider=provider,
+            model=model,
+        )
+    )
+    updated = replace(
+        document,
+        analyses=tuple(
+            item for item in document.analyses if item.definition_id != definition_id
+        ),
+        analysis_failures=tuple(sorted(failures, key=lambda item: item.definition_id)),
     )
     validate_lineage_document(updated)
     return updated

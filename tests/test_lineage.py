@@ -153,7 +153,7 @@ UPDATE target_alias SET value = 1 FROM #Stage AS target_alias;
             steps=source.steps,
         )
 
-        with self.assertRaisesRegex(LineageFailure, "Refresh semantics"):
+        with self.assertRaisesRegex(LineageFailure, "lineage build"):
             plan_lineage_tasks(document, changed)
 
     def test_explicit_write_units_do_not_cross_unrelated_reads_and_writes(self) -> None:
@@ -243,7 +243,10 @@ UPDATE target_alias SET value = 1 FROM #Stage AS target_alias;
                 os.chdir(previous_directory)
 
         self.assertEqual(result[0], 0)
-        self.assertEqual(json.loads(result[1])["applied"], 1)
+        payload = json.loads(result[1])
+        self.assertEqual(payload["applied"], 1)
+        self.assertEqual(payload["cache_hits"], 0)
+        self.assertEqual(payload["provider_requests"], 2)
         self.assertIn("incomplete_write_coverage", provider.requests[1].messages[-1].content)
         self.assertEqual(provider.requests[0].max_output_tokens, 24_000)
         self.assertEqual(provider.requests[0].reasoning_effort, "high")
