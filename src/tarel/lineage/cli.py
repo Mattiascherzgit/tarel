@@ -1,0 +1,235 @@
+"""Thin command-line adapter for write-centred static lineage."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+from tarel.lineage.application import (
+    apply_lineage_proposal_use_case,
+    build_lineage_use_case,
+    decide_lineage_item_use_case,
+    list_lineage_items_use_case,
+    load_lineage_use_case,
+    next_lineage_task_use_case,
+    process_lineage_view_use_case,
+    run_lineage_provider_use_case,
+    table_lineage_view_use_case,
+)
+from tarel.lineage.contracts import LineageFailure
+
+
+def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    lineage = subcommands.add_parser(
+        "lineage",
+        help="Build and review direct process and table lineage.",
+    )
+    commands = lineage.add_subparsers(dest="lineage_command")
+
+    build = commands.add_parser("build", help="Build lineage from a canonical input file.")
+    build.add_argument("name")
+    build.add_argument("--source", required=True, type=Path)
+    _format(build)
+
+    show = commands.add_parser("show", help="Show the document, process, or table projection.")
+    show.add_argument("name")
+    show.add_argument("--view", choices=("document", "process", "tables"), default="document")
+    _format(show)
+
+    next_task = commands.add_parser(
+        "next",
+        help="Return the next source-analysis task for the current coding agent.",
+    )
+    next_task.add_argument("name")
+    next_task.add_argument("--source", required=True, type=Path)
+
+    apply = commands.add_parser("apply", help="Apply one coding-agent workfile as draft lineage.")
+    apply.add_argument("name")
+    apply.add_argument("--source", required=True, type=Path)
+    apply.add_argument("--input", required=True, help="Proposal JSON file or '-' for stdin.")
+    _format(apply)
+
+    analyze = commands.add_parser(
+        "analyze",
+        help="Send complete definitions to an optional provider and apply draft workfiles.",
+    )
+    analyze.add_argument("name")
+    analyze.add_argument("--source", required=True, type=Path)
+    analyze.add_argument("--provider", required=True, choices=("openrouter",))
+    analyze.add_argument("--model")
+    analyze.add_argument("--timeout", type=float, default=180.0)
+    analyze.add_argument("--retry", type=int, default=1)
+    analyze.add_argument("--review-passes", type=int, default=1)
+    analyze.add_argument("--limit", type=int)
+    analyze.add_argument("--max-output-tokens", type=int)
+    analyze.add_argument(
+        "--reasoning-effort",
+        choices=("minimal", "low", "medium", "high", "xhigh"),
+    )
+    _format(analyze)
+
+    review = commands.add_parser("review", help="List or decide draft lineage items.")
+    review.add_argument("name")
+    review.add_argument("item_id", nargs="?")
+    review.add_argument("--decision", choices=("validate", "reject"))
+    review.add_argument("--reason")
+    review.add_argument("--state", action="append", choices=("draft", "validated", "rejected"))
+    _format(review)
+
+
+def dispatch_lineage(args: argparse.Namespace) -> int | None:
+    if args.command != "lineage":
+        return None
+    command = args.lineage_command
+    if command == "build":
+        result = build_lineage_use_case(args.name, source_path=args.source)
+        payload = {"lineage": result.document.to_dict(), "path": str(result.path)}
+        _render_document_change(payload, output_format=args.format)
+        return 0
+    if command == "show":
+        if args.view == "document":
+            payload: object = load_lineage_use_case(args.name).to_dict()
+        elif args.view == "process":
+            payload = {
+                "process": [item.to_dict() for item in process_lineage_view_use_case(args.name)]
+            }
+        else:
+            payload = {
+                "tables": [item.to_dict() for item in table_lineage_view_use_case(args.name)]
+            }
+        _render_view(payload, args.view, output_format=args.format)
+        return 0
+    if command == "next":
+        task = next_lineage_task_use_case(args.name, source_path=args.source)
+        payload = {"status": "complete"} if task is None else task.to_dict()
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    if command == "apply":
+        result = apply_lineage_proposal_use_case(
+            args.name,
+            source_path=args.source,
+            payload=_read_json_object(args.input),
+        )
+        payload = {"lineage": result.document.to_dict(), "path": str(result.path)}
+        _render_document_change(payload, output_format=args.format)
+        return 0
+    if command == "analyze":
+        print(
+            "warning: complete source definitions will be sent to the selected provider",
+            file=sys.stderr,
+        )
+        result = run_lineage_provider_use_case(
+            args.name,
+            source_path=args.source,
+            provider_name=args.provider,
+            model=args.model,
+            timeout=args.timeout,
+            retry=args.retry,
+            limit=args.limit,
+            review_passes=args.review_passes,
+            max_output_tokens=args.max_output_tokens,
+            reasoning_effort=args.reasoning_effort,
+            progress=lambda message: print(message, file=sys.stderr),
+        )
+        payload = {
+            "applied": result.applied,
+            "lineage": result.document.name,
+            "model": result.model,
+            "path": str(result.path),
+            "planned": result.planned,
+            "provider": result.provider,
+            "write_units": len(result.document.write_units),
+        }
+        if args.format == "json":
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Analyzed {result.applied}/{result.planned} definitions.")
+            print(f"Provider: {result.provider}; model: {result.model}")
+            print(f"Write units: {len(result.document.write_units)}")
+            print(f"Path: {result.path}")
+        return 0
+    if command == "review":
+        return _review(args)
+    return 0
+
+
+def _review(args: argparse.Namespace) -> int:
+    deciding = args.item_id is not None or args.decision is not None or args.reason is not None
+    if deciding:
+        if not args.item_id or not args.decision or not args.reason or args.state:
+            raise LineageFailure(
+                "invalid_lineage_review",
+                "A decision requires ITEM_ID, --decision, and --reason without --state.",
+            )
+        result = decide_lineage_item_use_case(
+            args.name,
+            args.item_id,
+            decision=args.decision,
+            reason=args.reason,
+        )
+        payload: object = {"item": result.item.to_dict(), "path": str(result.path)}
+    else:
+        states = frozenset(args.state) if args.state else None
+        payload = {
+            "items": [
+                item.to_dict() for item in list_lineage_items_use_case(args.name, states=states)
+            ]
+        }
+    _render_view(payload, "review", output_format=args.format)
+    return 0
+
+
+def _read_json_object(location: str) -> dict[str, Any]:
+    try:
+        raw = sys.stdin.read() if location == "-" else Path(location).read_text(encoding="utf-8")
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LineageFailure("invalid_lineage_proposal", "Could not read proposal JSON.") from exc
+    if not isinstance(payload, dict):
+        raise LineageFailure("invalid_lineage_proposal", "Proposal JSON must be an object.")
+    return payload
+
+
+def _format(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--format", choices=("text", "json"), default="text")
+
+
+def _render_document_change(payload: dict[str, object], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    lineage = payload["lineage"]
+    if isinstance(lineage, dict):
+        print(f"Lineage: {lineage['name']}")
+        print(f"Definitions: {len(lineage['definitions'])}")
+        print(f"Steps: {len(lineage['steps'])}")
+        print(f"Claims: {len(lineage['claims'])}")
+        print(f"Write units: {len(lineage['write_units'])}")
+    print(f"Path: {payload['path']}")
+
+
+def _render_view(payload: object, view: str, *, output_format: str) -> None:
+    if output_format == "json" or view == "document":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not isinstance(payload, dict):
+        return
+    rows = payload.get(view)
+    if not isinstance(rows, list):
+        rows = payload.get("items")
+    if not isinstance(rows, list):
+        item = payload.get("item")
+        rows = [item] if isinstance(item, dict) else []
+    for row in rows:
+        if view == "process":
+            dependencies = ", ".join(row["depends_on"]) or "-"
+            print(f"- {row['name']}: {row['definition']} (after: {dependencies})")
+        elif view == "tables":
+            print(
+                f"- {row['source']} -> {row['target']} via {row['via_definition']} [{row['state']}]"
+            )
+        else:
+            print(f"- {row['id']}: {row['operation']} {row['target']} [{row['state']}]")
