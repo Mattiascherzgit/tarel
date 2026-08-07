@@ -4,136 +4,110 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-2ea44f.svg)](https://github.com/Mattiascherzgit/tarel/blob/master/LICENSE)
 
-**Give coding agents the right analytics context -- and let them extend the tool when the source is
-new.**
+**Give coding agents a semantic map of enterprise data and lineage.**
 
-TAREL is a local-first context compiler for data warehouses, BI systems, and ERP schemas. It turns
-technical metadata, bounded evidence, semantic annotations, and relationships into compact context
-that an agent can actually use.
+TAREL helps coding agents navigate data warehouses, BI platforms, ERP schemas, and ETL landscapes
+that are too large, cryptic, or interconnected for grep and a single prompt. It discovers technical
+structures and execution flows, turns bounded evidence into reviewable semantic annotations, and
+compiles only the tables, fields, relationships, jobs, and lineage paths relevant to the current
+task.
 
-```text
-known source -> technical graph -> reviewed meaning -> retrieval -> agent context
-new source   -> agent-built connector candidate -> human gate -> same pipeline
-workflow     -> process order -> evidence-backed writes -> graph and context seeds
+TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**.
+
+```mermaid
+flowchart LR
+    H["Codex · Claude Code · Pi<br/>Coding harness"]
+
+    subgraph E["Local or corporate environment"]
+        S["DWH · BI · ERP<br/>ETL and job definitions"]
+        T["TAREL CLI"]
+        L["Annotation LLM<br/>private · corporate · chosen provider"]
+        R["Human review"]
+        G["Semantic graph<br/>data + lineage"]
+        Q["BM25 + local<br/>Qwen embeddings"]
+        C["Bounded, deterministic<br/>context packet"]
+
+        S -->|"metadata, samples, SQL, workflows"| T
+        T -->|"bounded annotation task"| L
+        L -->|"draft annotations and evidence"| T
+        T --> R
+        R --> G
+        G --> Q
+        Q --> C
+    end
+
+    H -->|"orchestrates commands"| T
+    C -->|"task-specific context"| H
 ```
 
-TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**. It is a dependency-light
-Python CLI with no mandatory runtime dependency. Use it directly from Codex, Claude Code, Pi, or
-another coding agent; later, embed the same application core into your own software.
+### Built for coding harnesses
 
-TAREL follows a self-modifying-software idea with a deliberate safety boundary. When it encounters
-an unsupported source, the coding agent operating TAREL can create an isolated connector candidate,
-research the official metadata APIs and dialect, implement the adapter, and test it locally. A
-human reviews the code and observed results before activation. The kernel stays small while the
-installation can grow toward the systems it actually encounters.
+TAREL is primarily a CLI for coding harnesses such as Codex, Claude Code, Pi, and similar agent
+environments. The harness controls discovery, annotation, review, retrieval, and context compilation
+through explicit commands.
 
-TAREL is deliberately not another catalog UI, chat application, SQL execution engine, or mandatory
-graph server. It is the small layer between a complex analytical estate and an agent's limited
-context window.
+TAREL supports two annotation modes:
+
+- **Coding-agent mode:** the harness receives one bounded annotation task and proposes the semantic
+  description. This needs no separate provider and works well for exploration and small systems.
+- **Private-provider mode:** TAREL sends bounded evidence directly to a configured annotation model.
+  This can be a smaller corporate model exposed through a supported provider adapter. The frontier
+  harness can operate on the resulting graph and context without receiving the complete sample or
+  procedure payload.
+
+Generated descriptions, relationships, and lineage claims begin as proposals. A human can validate,
+edit, reject, or defer them before they become trusted knowledge.
+
+### Semantic retrieval is the recommended path
+
+Exact search and BM25 work well for source code and clearly named schemas. Enterprise information
+systems are different: names are abbreviated, business meaning lives in annotations, and relevant
+objects may be spread across hundreds of tables and several schemas.
+
+TAREL therefore combines BM25 for exact identifiers, local Qwen embeddings for business language
+and synonyms, graph expansion for trusted relationships, and bounded context compilation for the
+final agent prompt. Only allowlisted graph metadata is embedded; connection strings, sample values,
+and arbitrary provenance are excluded from the vector index.
+
+```text
+discover -> annotate -> human review -> embed -> retrieve -> compile context
+```
+
+TAREL keeps its kernel small and dependency-free. When a source is unknown, the coding harness can
+create and test an isolated connector candidate from TAREL's contracts. A human reviews the code and
+observed results before activation, so the installation can extend itself without silently changing
+the trusted kernel.
 
 > TAREL is pre-alpha software. The CLI and serialized contracts may still change during `0.x`.
 > A stable public SDK, native orchestration exporters, ETL run history, and semantic-standard
 > interoperability are not part of the current release.
 
-## The problem it solves
-
-An agent can inspect a small, well-named schema directly. Real analytical estates are different:
-hundreds of tables, abbreviated names, missing foreign keys, undocumented measures, several source
-systems, and knowledge that exists only in people's heads.
-
-Dumping an entire schema into the prompt wastes context and still leaves the agent guessing. TAREL
-instead builds a reusable map of the estate and compiles only the relevant part for each question:
-
-1. A connector observes schemas, tables, views, fields, keys, descriptions, and bounded samples.
-2. TAREL builds a deterministic technical graph with stable identities.
-3. A coding agent or optional LLM provider proposes semantic annotations.
-4. A human validates, edits, rejects, or defers those proposals.
-5. Search selects useful graph objects and expands through trusted relationships.
-6. The context compiler emits only the relevant objects, fields, joins, warnings, and provenance.
-
-For ETL questions, a separate static-lineage path records workflow order, procedure calls, direct
-writes, and proposed physical objects that feed each write. Those object references become precise
-seeds for schema search and context compilation; TAREL does not pretend that job order alone is
-data lineage.
-
-The result is small enough for an agent, explicit enough for a human to review, and deterministic
-enough for prompt caching. The source database remains authoritative: TAREL stores metadata and
-claims, not a copy of the warehouse.
-
-## Design principles
-
-- **Self-extending, human-gated.** A coding agent can build missing source adapters locally from
-  explicit contracts; generated code remains isolated and inactive until reviewed.
-- **Local first.** Graphs, indexes, reviews, and context packets work without a hosted service.
-- **Evidence before confidence.** Technical observations, generated proposals, and human-validated
-  knowledge remain distinguishable.
-- **Human-reviewed semantics.** Generated descriptions and inferred joins begin as proposals, never
-  as silent truth.
-- **Small, stable context.** Deterministic ordering, explicit budgets, hashes, and visible omissions
-  make output inspectable and cache-friendly.
-- **Optional complexity.** The core uses only the Python standard library. Database drivers, local
-  embeddings, and remote LLM calls are opt-in.
-- **Agent-native, provider-neutral.** The agent already operating the CLI can research and extend
-  TAREL. An optional provider handles repeatable parallel annotation jobs.
-
-## Start here
-
-If you are evaluating TAREL, follow the [five-minute local demo](#five-minute-local-demo). It needs
-no credentials and exercises discovery, graph construction, annotation exchange, relationship
-detection, retrieval, context compilation, and schema-drift reporting.
-
-If you already have a source:
-
-- read [Teach TAREL a new source](#teach-tarel-a-new-source) when no connector exists;
-- read [Connector runtime](#connector-runtime) for the current built-in adapters;
-- read [Semantic annotation and review](#semantic-annotation-and-review) for meaning and approval;
-- read [Static process and table lineage](#static-process-and-table-lineage) for ETL definitions;
-- read [Retrieval modes](#retrieval-modes) and
-  [Deterministic context packets](#deterministic-context-packets) for agent integration.
-
-## Implemented features
-
-| Area | Current capability |
-|---|---|
-| Self-extension | Agent-readable connector tasks, isolated candidates, versioned manifests, dialect references, and a human activation gate |
-| Connector runtime | Stable read-only contracts for probing, metadata discovery, sampling, and bounded relationship evidence |
-| Discovery | Catalog, namespace, table, view, field, type, nullability, primary key, foreign key, and technical description observations |
-| Sampling | Explicit, deterministic samples of 1–10 rows with field, value-size, and total-size limits |
-| Graph | Stable technical node and edge identities; atomic local JSON persistence; deterministic revisions |
-| Annotation | Provider-free coding-agent tasks and optional OpenRouter-backed parallel batches |
-| Human review | Draft, validated, rejected, deferred, and `review_required` states with preserved originals and review reasons |
-| Relationships | Declared foreign keys, human-defined joins, and bounded aggregate discovery of missing relationship candidates |
-| Retrieval | Deterministic lexical search, dependency-free BM25, optional local vector search, and hybrid reciprocal-rank fusion |
-| Context | Bounded object, field, join, and hop selection with visible paths, reasons, warnings, and omissions |
-| Cache-friendly output | Stable and dynamic packet sections, graph revision, canonical hashes, packet diffing, and refresh impact checks |
-| Static lineage | Workflow order, procedure calls, evidence-backed write units, direct table lineage, human review, revision-aware refresh, and validated provider-workfile caching |
-| Workspaces | `system → area → schema` hierarchy plus explicit overlapping zones across schemas |
-| Change Radar | Field, key, object, and relationship drift; possible renames; stale claims; affected areas, zones, and context packets |
-| Demo | Deterministic local Retail DWH with a deliberate missing relationship and reproducible V1→V2 schema drift |
-
-The runtime core has no mandatory third-party dependency. SQLite uses Python's standard library.
-SQL Server and local embeddings are optional extras.
-
-## Installation
+## Getting started
 
 ```bash
 python -m pip install tarel
 tarel --version
 ```
 
-This installs the dependency-free core. TAREL supports Python 3.11 and 3.12.
+This installs the dependency-free core. TAREL supports Python 3.11 and 3.12. For realistic
+information systems, the recommended installation adds local semantic retrieval:
 
-Optional capabilities:
+```bash
+python -m pip install 'tarel[local-rag]'
+```
+
+Source-specific drivers remain separate:
 
 ```bash
 # SQL Server through pymssql
 python -m pip install 'tarel[sqlserver]'
-
-# Local CPU embeddings through llama.cpp
-python -m pip install 'tarel[local-rag]'
 ```
 
-## Five-minute local demo
+The embedding runtime is optional and isolated from the core. `tarel model download` is always an
+explicit action; it downloads the pinned model, verifies its checksum, and never runs during
+package import.
+
+## Demo walkthrough
 
 The bundled Retail DWH is the safest way to try TAREL. It contains synthetic analytical data,
 requires no credentials, and is created only when requested.
@@ -177,29 +151,52 @@ The demo graph contains date, product, customer, geography, reseller, currency, 
 dimensions; two sales facts; a return fact; a mapping table; and a union view. Its fact names are
 deliberately abbreviated so that semantic annotation provides measurable value.
 
-### 3. Annotate with the current coding agent
+### 3. Annotate and review meaning
 
-TAREL can work without an API provider. Ask for one complete, structured task:
+For repeatable or parallel annotation, configure a provider and let TAREL call it directly. The
+current built-in batch adapter uses the OpenRouter-compatible provider boundary:
+
+```bash
+export TAREL_OPENROUTER_API_KEY="..."
+tarel provider configure openrouter \
+  --from-env \
+  --model YOUR_MODEL_ID
+tarel provider test openrouter
+
+tarel graph annotate retail-demo \
+  --provider openrouter \
+  --config .tarel/demos/retail-dwh.toml \
+  --samples 5 \
+  --workers 4
+```
+
+With an appropriate provider adapter and endpoint, this boundary can point at a privately hosted
+corporate model. The coding harness controls the command while TAREL sends the bounded annotation
+payload to that provider and persists only the resulting proposals and evidence.
+
+TAREL also works without a separate provider. Ask for one complete task and let the coding agent
+already operating the CLI produce the structured proposal:
 
 ```bash
 tarel annotation next retail-demo \
   --samples 5 \
   --config .tarel/demos/retail-dwh.toml > annotation-task.json
+
+# Give annotation-task.json to the coding agent and save its response as proposal.json.
+tarel annotation apply retail-demo --input proposal.json
 ```
 
-Give `annotation-task.json` to the coding agent already running TAREL. Save its structured response
-as `proposal.json`, then apply it as a draft:
+Both paths create drafts. Review state is explicit, and a human decides what becomes trusted:
 
 ```bash
-tarel annotation apply retail-demo --input proposal.json
 tarel annotation show retail-demo main.D_CHNL
 tarel annotation validate retail-demo main.D_CHNL \
   --include-fields \
   --reason "Reviewed against the demo schema and bounded samples."
 ```
 
-Every proposal must cover the selected object and all supplied fields. Samples are input-only:
-they are not persisted in the graph and must not be repeated in generated descriptions.
+Every proposal covers the selected object and all supplied fields. Samples are input-only: they
+are not persisted in the graph and must not be repeated in generated descriptions.
 
 ### 4. Discover the deliberately missing relationship
 
@@ -223,24 +220,33 @@ tarel relationship validate retail-demo RELATIONSHIP_ID \
   --reason "The domain overlap and target uniqueness were reviewed."
 ```
 
-### 5. Search and compile agent context
+### 5. Embed, retrieve, and compile agent context
 
-Dependency-free BM25 is useful immediately after annotation:
+For real information systems, build the local semantic index after annotation or review changes:
 
 ```bash
+tarel model download
+tarel model status
+tarel index build retail-demo
+
 tarel search retail-demo \
   "internet and reseller sales by year" \
-  --mode bm25 \
+  --mode hybrid \
   --limit 10
 
-tarel context retail-demo \
+tarel context build retail-demo \
   "internet and reseller sales by year" \
-  --mode bm25 \
+  --mode hybrid \
   --max-objects 10
 ```
 
-The context result contains graph metadata and proposed joins needed to answer the question. It
-does not execute the analytical aggregation itself.
+Hybrid retrieval combines exact BM25 matches with local Qwen embeddings over names, descriptions,
+roles, synonyms, semantic types, and other allowlisted graph metadata. The context result then
+expands those semantic anchors through reviewed graph relationships. It does not execute the
+analytical aggregation itself.
+
+If the optional embedding runtime is not installed, `--mode bm25` remains the dependency-free
+fallback. TAREL fails visibly rather than silently downgrading a requested vector or hybrid search.
 
 Conceptually, the agent receives a bounded packet like this:
 
@@ -270,9 +276,9 @@ omissions. Unreviewed proposals may be included, but their state is never hidden
 Save the first packet, replace the local demo source with V2, refresh the graph, and check impact:
 
 ```bash
-tarel context retail-demo \
+tarel context build retail-demo \
   "internet and reseller sales by year" \
-  --mode bm25 \
+  --mode hybrid \
   --format json > retail-context-v1.json
 
 tarel demo create retail-dwh --version 2 --force
@@ -288,6 +294,134 @@ one declared relationship. Change Radar preserves affected claims, moves validat
 areas, zones, and context packets.
 
 See the complete [Retail DWH walkthrough](https://github.com/Mattiascherzgit/tarel/blob/master/docs/retail-demo.md).
+
+## Command reference
+
+The harness-facing surface stays explicit and composable:
+
+| Command | Purpose |
+|---|---|
+| `tarel demo` | Create deterministic local demo sources |
+| `tarel connector` | Check, probe, discover, sample, and scaffold source connectors |
+| `tarel graph` | Build, refresh, inspect, and provider-annotate technical graphs |
+| `tarel annotation` | Plan, exchange, apply, inspect, edit, and review semantic proposals |
+| `tarel relationship` | Add, probe, discover, inspect, and review possible joins |
+| `tarel lineage` | Build, refresh, analyze, inspect, and review static process and table lineage |
+| `tarel model` | Explicitly download and verify the optional local embedding model |
+| `tarel index` | Build and inspect rebuildable local vector indexes |
+| `tarel search` | Retrieve relevant objects and fields through lexical, BM25, vector, or hybrid search |
+| `tarel context` | Build, compare, and impact-check deterministic agent context packets |
+| `tarel workspace` | Organize graphs into systems, areas, schemas, and overlapping zones |
+| `tarel provider` | Configure, inspect, and test optional annotation providers |
+
+Every substantive command supports deterministic JSON where machine consumption is useful. Run
+`tarel COMMAND --help` or `tarel COMMAND SUBCOMMAND --help` for the exact installed interface. The
+sections below document connector authoring, annotation, lineage, retrieval, workspaces, and local
+persistence in more detail.
+
+## Caching options
+
+TAREL separates four kinds of reuse instead of hiding them behind one opaque cache:
+
+| Layer | Stored locally | Invalidation boundary |
+|---|---|---|
+| Model cache | Checksum-verified GGUF embedding model | Explicit model identity and SHA-256 |
+| Retrieval index | Allowlisted graph documents and normalized vectors in SQLite | Graph revision, retrieval contract, and model SHA-256 |
+| Provider analysis cache | Schema-validated lineage workfiles without procedure source | Source identity, prompt contract, model, and reasoning settings |
+| Harness prompt cache | Consumer-managed stable prefix from a context packet | Stable hash and graph revision |
+
+`TAREL_CACHE_DIR` changes the model cache root; otherwise TAREL follows `XDG_CACHE_HOME` and then
+the platform user cache. `TAREL_EMBEDDING_MODEL` can point to an existing GGUF. Vector indexes live
+under `.tarel/indexes/` and are rebuilt explicitly after graph or annotation changes:
+
+```bash
+tarel model status
+tarel index status retail-demo
+tarel index build retail-demo
+```
+
+For LLM prefix caching, `tarel.context.v0.2` places the deterministic `stable` section before the
+question-specific `dynamic` section. It emits graph revision, stable hash, dynamic hash, complete
+packet hash, ordered content, and visible omissions without timestamps, runtimes, or volatile local
+paths. A harness can reuse the stable JSON prefix and map its hash to provider-specific cache
+controls without TAREL depending on that provider.
+
+Context size and trust are explicit CLI choices:
+
+```bash
+tarel context build retail-demo \
+  "internet and reseller sales by year" \
+  --mode hybrid \
+  --namespace main \
+  --max-objects 10 \
+  --max-joins 12 \
+  --max-hops 2 \
+  --max-fields-per-object 12 \
+  --max-characters 24000 \
+  --format json > packet.json
+
+tarel context diff packet-a.json packet-b.json
+tarel context impact packet.json --graph retail-demo
+```
+
+TAREL deliberately does not invent TTLs, provider cache headers, or session affinity. Those remain
+harness concerns; the neutral packet supplies the deterministic boundaries needed to implement
+them. See the [context packet contract](https://github.com/Mattiascherzgit/tarel/blob/master/docs/context-contract.md).
+
+## The problem it solves
+
+An agent can inspect a small, well-named schema directly. Real analytical estates contain hundreds
+of abbreviated tables, missing foreign keys, undocumented measures, multiple source systems, and
+knowledge that exists only in people's heads. Dumping the full schema into a prompt wastes context
+and still leaves the agent guessing.
+
+TAREL builds a reusable map instead. Connectors observe bounded technical evidence; annotation
+models propose meaning; humans review it; retrieval chooses useful graph anchors; and the context
+compiler emits only the relevant objects, fields, joins, warnings, and provenance. A separate
+static-lineage path records workflow order, procedure calls, direct writes, and proposed physical
+objects without pretending that job order alone is data lineage.
+
+The source system remains authoritative: TAREL stores metadata and reviewable claims, not a copy of
+the warehouse.
+
+## Design principles
+
+- **Self-extending, human-gated.** A coding agent can build missing source adapters locally from
+  explicit contracts; generated code remains isolated and inactive until reviewed.
+- **Local first.** Graphs, indexes, reviews, and context packets work without a hosted service.
+- **Evidence before confidence.** Technical observations, generated proposals, and human-validated
+  knowledge remain distinguishable.
+- **Human-reviewed semantics.** Generated descriptions and inferred joins begin as proposals, never
+  as silent truth.
+- **Small, stable context.** Deterministic ordering, explicit budgets, hashes, and visible omissions
+  make output inspectable and cache-friendly.
+- **Optional complexity.** The core uses only the Python standard library. Database drivers, local
+  embeddings, and remote LLM calls are opt-in.
+- **Agent-native, provider-neutral.** The harness can research and extend TAREL; an optional provider
+  handles repeatable parallel annotation jobs.
+
+## Implemented features
+
+| Area | Current capability |
+|---|---|
+| Self-extension | Agent-readable connector tasks, isolated candidates, versioned manifests, dialect references, and a human activation gate |
+| Connector runtime | Stable read-only contracts for probing, metadata discovery, sampling, and bounded relationship evidence |
+| Discovery | Catalog, namespace, table, view, field, type, nullability, primary key, foreign key, and technical description observations |
+| Sampling | Explicit, deterministic samples of 1–10 rows with field, value-size, and total-size limits |
+| Graph | Stable technical node and edge identities; atomic local JSON persistence; deterministic revisions |
+| Annotation | Provider-free coding-agent tasks and optional OpenRouter-backed parallel batches |
+| Human review | Draft, validated, rejected, deferred, and `review_required` states with preserved originals and review reasons |
+| Relationships | Declared foreign keys, human-defined joins, and bounded aggregate discovery of missing relationship candidates |
+| Retrieval | Deterministic lexical search, dependency-free BM25, optional local vector search, and hybrid reciprocal-rank fusion |
+| Context | Bounded object, field, join, and hop selection with visible paths, reasons, warnings, and omissions |
+| Cache-friendly output | Stable and dynamic packet sections, graph revision, canonical hashes, packet diffing, and refresh impact checks |
+| Static lineage | Workflow order, procedure calls, evidence-backed write units, direct table lineage, human review, revision-aware refresh, and validated provider-workfile caching |
+| Workspaces | `system → area → schema` hierarchy plus explicit overlapping zones across schemas |
+| Change Radar | Field, key, object, and relationship drift; possible renames; stale claims; affected areas, zones, and context packets |
+| Demo | Deterministic local Retail DWH with a deliberate missing relationship and reproducible V1→V2 schema drift |
+
+The runtime core has no mandatory third-party dependency. SQLite uses Python's standard library.
+SQL Server and local embeddings are optional extras.
 
 ## Teach TAREL a new source
 
@@ -501,7 +635,7 @@ the user cache. Models and vector indexes are not included in the repository or 
 embeds an allowlist of graph metadata; connection information, sample values, and arbitrary
 provenance are excluded. See [Local retrieval](https://github.com/Mattiascherzgit/tarel/blob/master/docs/local-retrieval.md).
 
-## Deterministic context packets
+## Context packet details
 
 `tarel.context.v0.2` separates a reusable stable prefix from question-specific dynamic content.
 The packet includes:
@@ -588,26 +722,6 @@ Security defaults:
 - sample blocks are never persisted in graph annotations;
 - inferred relationships are not traversed until human validation;
 - model downloads and remote provider calls never happen during import.
-
-## Command overview
-
-```text
-tarel demo          create deterministic local demo sources
-tarel connector     check, probe, discover, sample, and scaffold connectors
-tarel graph         build, refresh, list, show, and batch-annotate graphs
-tarel annotation    plan, exchange, apply, inspect, edit, and review proposals
-tarel lineage       build/refresh, analyze, inspect, and review static lineage
-tarel relationship  add, probe, discover, list, validate, and reject possible joins
-tarel search        retrieve relevant graph objects and fields
-tarel context       build, diff, and impact-check deterministic context packets
-tarel model         explicitly download and verify the optional embedding model
-tarel index         build and inspect local vector indexes
-tarel workspace     organize graphs into systems, areas, schemas, and zones
-tarel provider      configure and test optional annotation providers
-```
-
-Every substantive command supports deterministic JSON output where it is useful. Run
-`tarel COMMAND --help` for the exact current interface.
 
 ## What TAREL does not do yet
 
