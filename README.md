@@ -6,14 +6,6 @@
 
 **Give coding agents a semantic map of enterprise data and lineage.**
 
-TAREL helps coding agents navigate data warehouses, BI platforms, ERP schemas, and ETL landscapes
-that are too large, cryptic, or interconnected for grep and a single prompt. It discovers technical
-structures and execution flows, turns bounded evidence into reviewable semantic annotations, and
-compiles only the tables, fields, relationships, jobs, and lineage paths relevant to the current
-task.
-
-TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**.
-
 ```mermaid
 flowchart LR
     H["Codex · Claude Code · Pi<br/>Coding harness"]
@@ -39,6 +31,14 @@ flowchart LR
     H -->|"orchestrates commands"| T
     C -->|"task-specific context"| H
 ```
+
+TAREL helps coding agents navigate data warehouses, BI platforms, ERP schemas, and ETL landscapes
+that are too large, cryptic, or interconnected for grep and a single prompt. It discovers technical
+structures and execution flows, turns bounded evidence into reviewable semantic annotations, and
+compiles only the tables, fields, relationships, jobs, and lineage paths relevant to the current
+task.
+
+TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**.
 
 ### Built for coding harnesses
 
