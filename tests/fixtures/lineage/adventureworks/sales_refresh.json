@@ -1,0 +1,48 @@
+{
+  "definitions": [
+    {
+      "content": "CREATE PROCEDURE [tarel_demo].[usp_StageInternetSales]\nAS\nBEGIN\n    SET NOCOUNT ON;\n\n    INSERT INTO [tarel_demo].[InternetSalesStage]\n    SELECT sales.[SalesOrderNumber], sales.[OrderDateKey], sales.[ProductKey], sales.[SalesAmount]\n    FROM [dbo].[FactInternetSales] AS sales\n    INNER JOIN [dbo].[DimDate] AS dates\n        ON dates.[DateKey] = sales.[OrderDateKey];\nEND;",
+      "external_id": "sqlserver:AdventureWorksDW2025/tarel_demo/usp_StageInternetSales",
+      "kind": "procedure",
+      "language": "tsql",
+      "name": "usp_StageInternetSales",
+      "qualified_name": "AdventureWorksDW2025.tarel_demo.usp_StageInternetSales",
+      "source_reference": "AdventureWorksDW2025:tarel_demo.usp_StageInternetSales"
+    },
+    {
+      "content": "CREATE PROCEDURE [tarel_demo].[usp_LoadAnnualProductSales]\nAS\nBEGIN\n    SET NOCOUNT ON;\n\n    INSERT INTO [tarel_demo].[AnnualProductSales]\n    SELECT dates.[CalendarYear], product.[ProductKey], SUM(stage.[SalesAmount])\n    FROM [tarel_demo].[InternetSalesStage] AS stage\n    INNER JOIN [dbo].[DimDate] AS dates\n        ON dates.[DateKey] = stage.[OrderDateKey]\n    INNER JOIN [dbo].[DimProduct] AS product\n        ON product.[ProductKey] = stage.[ProductKey]\n    GROUP BY dates.[CalendarYear], product.[ProductKey];\nEND;",
+      "external_id": "sqlserver:AdventureWorksDW2025/tarel_demo/usp_LoadAnnualProductSales",
+      "kind": "procedure",
+      "language": "tsql",
+      "name": "usp_LoadAnnualProductSales",
+      "qualified_name": "AdventureWorksDW2025.tarel_demo.usp_LoadAnnualProductSales",
+      "source_reference": "AdventureWorksDW2025:tarel_demo.usp_LoadAnnualProductSales"
+    }
+  ],
+  "format_version": "tarel.lineage-input.v0.1",
+  "source": {
+    "kind": "json",
+    "name": "AdventureWorks sales refresh fixture",
+    "reference": "tests/fixtures/lineage/adventureworks/sales_refresh.json"
+  },
+  "workflow": {
+    "external_id": "adventureworks-sales-refresh",
+    "name": "AdventureWorks Sales Refresh",
+    "steps": [
+      {
+        "definition_id": "sqlserver:AdventureWorksDW2025/tarel_demo/usp_StageInternetSales",
+        "depends_on": [],
+        "external_id": "stage-internet-sales",
+        "name": "Stage Internet Sales"
+      },
+      {
+        "definition_id": "sqlserver:AdventureWorksDW2025/tarel_demo/usp_LoadAnnualProductSales",
+        "depends_on": [
+          "stage-internet-sales"
+        ],
+        "external_id": "load-annual-product-sales",
+        "name": "Load Annual Product Sales"
+      }
+    ]
+  }
+}

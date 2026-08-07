@@ -14,6 +14,7 @@ that an agent can actually use.
 ```text
 known source -> technical graph -> reviewed meaning -> retrieval -> agent context
 new source   -> agent-built connector candidate -> human gate -> same pipeline
+workflow     -> process order -> evidence-backed writes -> graph and context seeds
 ```
 
 TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**. It is a dependency-light
@@ -31,8 +32,8 @@ graph server. It is the small layer between a complex analytical estate and an a
 context window.
 
 > TAREL is pre-alpha software. The CLI and serialized contracts may still change during `0.x`.
-> A stable public SDK, operational lineage, and semantic-standard interoperability are not part of
-> the current release.
+> A stable public SDK, native orchestration exporters, ETL run history, and semantic-standard
+> interoperability are not part of the current release.
 
 ## The problem it solves
 
@@ -49,6 +50,11 @@ instead builds a reusable map of the estate and compiles only the relevant part 
 4. A human validates, edits, rejects, or defers those proposals.
 5. Search selects useful graph objects and expands through trusted relationships.
 6. The context compiler emits only the relevant objects, fields, joins, warnings, and provenance.
+
+For ETL questions, a separate static-lineage path records workflow order, procedure calls, direct
+writes, and proposed physical objects that feed each write. Those object references become precise
+seeds for schema search and context compilation; TAREL does not pretend that job order alone is
+data lineage.
 
 The result is small enough for an agent, explicit enough for a human to review, and deterministic
 enough for prompt caching. The source database remains authoritative: TAREL stores metadata and
@@ -81,6 +87,7 @@ If you already have a source:
 - read [Teach TAREL a new source](#teach-tarel-a-new-source) when no connector exists;
 - read [Connector runtime](#connector-runtime) for the current built-in adapters;
 - read [Semantic annotation and review](#semantic-annotation-and-review) for meaning and approval;
+- read [Static process and table lineage](#static-process-and-table-lineage) for ETL definitions;
 - read [Retrieval modes](#retrieval-modes) and
   [Deterministic context packets](#deterministic-context-packets) for agent integration.
 
@@ -99,6 +106,7 @@ If you already have a source:
 | Retrieval | Deterministic lexical search, dependency-free BM25, optional local vector search, and hybrid reciprocal-rank fusion |
 | Context | Bounded object, field, join, and hop selection with visible paths, reasons, warnings, and omissions |
 | Cache-friendly output | Stable and dynamic packet sections, graph revision, canonical hashes, packet diffing, and refresh impact checks |
+| Static lineage | Workflow order, procedure calls, evidence-backed write units, direct table lineage, human review, revision-aware refresh, and validated provider-workfile caching |
 | Workspaces | `system → area → schema` hierarchy plus explicit overlapping zones across schemas |
 | Change Radar | Field, key, object, and relationship drift; possible renames; stale claims; affected areas, zones, and context packets |
 | Demo | Deterministic local Retail DWH with a deliberate missing relationship and reproducible V1→V2 schema drift |
@@ -389,6 +397,86 @@ tarel annotation reject retail-demo main.F_SLS_01 \
 Human edits preserve the original proposal. Rejected claims are hidden from retrieval while the
 technical schema stays available.
 
+## Static process and table lineage
+
+TAREL can model design-time ETL behavior without installing an orchestration platform or copying
+procedure code into its persisted lineage document. A strict input document supplies observed
+workflow steps and complete definitions. TAREL persists their identities and hashes, then keeps
+three different facts separate:
+
+- **Process order:** which workflow step runs after which predecessor.
+- **Calls:** procedures or scripts directly invoked by a definition.
+- **Table lineage:** one persistent write target and the proposed physical sources that influence
+  that write, each with exact source evidence and temporary objects only as an explicit `via` path.
+
+The input boundary is `tarel.lineage-input.v0.1`. A source-specific exporter can be a small local
+adapter created by the coding agent for SQL Server Agent, Airflow, a JSON/XML export, or another
+orchestrator. Exporters are not activated implicitly and are not yet shipped as a public connector
+catalog.
+
+Build the technical process document and inspect what still needs analysis:
+
+```bash
+tarel lineage build enterprise-etl --source workflow.json
+tarel lineage show enterprise-etl --view status
+tarel lineage show enterprise-etl --view process
+```
+
+Use the coding agent already operating the CLI without configuring an API:
+
+```bash
+tarel lineage next enterprise-etl --source workflow.json > lineage-task.json
+# The coding agent reads the complete definition and produces proposal.json.
+tarel lineage apply enterprise-etl \
+  --source workflow.json \
+  --input proposal.json
+```
+
+For repeatable batches, the optional provider path analyzes complete definitions, runs an audit
+pass by default, and applies the same deterministic evidence and write-coverage checks:
+
+```bash
+tarel lineage analyze enterprise-etl \
+  --source workflow.json \
+  --provider openrouter
+```
+
+This command deliberately warns that definition source will leave the machine. Only a validated
+structured workfile is cached locally; the cache contains no procedure source. Its identity binds
+the definition content hash, analyzer version, provider, model, audit count, output limit, and
+reasoning effort. CLI output reports cache hits and actual provider requests.
+
+Generated observations and write units remain proposals:
+
+```bash
+tarel lineage review enterprise-etl --state draft
+tarel lineage review enterprise-etl ITEM_ID \
+  --decision validate \
+  --reason "Checked against the complete procedure"
+tarel lineage show enterprise-etl --view tables
+```
+
+Running `lineage build` again is an idempotent refresh. Unchanged analysis is preserved. Changed
+definitions become pending again, their existing claims move to `review_required`, and removed or
+stale knowledge remains in a revision-bound change report instead of disappearing silently.
+
+The useful agent workflow joins lineage and schema evidence explicitly:
+
+```bash
+tarel lineage show enterprise-etl --view tables --format json > lineage.json
+tarel search warehouse "internet sales customer product order date" --mode bm25
+tarel context build warehouse "internet versus reseller sales by year" --mode bm25
+```
+
+These are two explicit calls today: `context build` does not yet traverse the lineage document
+automatically. Keeping that boundary visible avoids treating an unreviewed lineage proposal as a
+trusted graph relationship.
+
+The current contract is direct, object-level, static lineage. It does not infer column lineage,
+dynamic SQL behavior, runtime execution history, or transitive data flow through a called
+procedure. Review state is always emitted so an agent can distinguish a draft proposal from
+human-validated knowledge.
+
 ## Retrieval modes
 
 `search` and `context` support four retrieval modes:
@@ -480,11 +568,16 @@ TAREL is file-first. Runtime state is stored below the working directory:
 │       ├── graph.json
 │       └── changes/
 ├── indexes/
+├── lineage/
+│   └── LINEAGE/
+│       ├── lineage.json
+│       └── changes/
+├── lineage-analysis-cache/
 └── workspaces/
 ```
 
-`.tarel/` is ignored by Git. Graph and workspace stores have explicit whole-document boundaries so
-that a later shared database implementation can use the same application use cases.
+`.tarel/` is ignored by Git. Graph, lineage, and workspace stores have explicit whole-document
+boundaries so that a later shared database implementation can use the same application use cases.
 
 Security defaults:
 
@@ -503,6 +596,7 @@ tarel demo          create deterministic local demo sources
 tarel connector     check, probe, discover, sample, and scaffold connectors
 tarel graph         build, refresh, list, show, and batch-annotate graphs
 tarel annotation    plan, exchange, apply, inspect, edit, and review proposals
+tarel lineage       build/refresh, analyze, inspect, and review static lineage
 tarel relationship  add, probe, discover, list, validate, and reject possible joins
 tarel search        retrieve relevant graph objects and fields
 tarel context       build, diff, and impact-check deterministic context packets
@@ -520,7 +614,9 @@ Every substantive command supports deterministic JSON output where it is useful.
 - no stable public SDK;
 - the distribution does not yet ship PostgreSQL, cloud warehouse, lake, document, or orchestration
   connectors; agents can already author database and warehouse candidates;
-- no operational lineage or ETL run history yet;
+- no native orchestration exporters, column-level lineage, dynamic-SQL resolution, or ETL run
+  history yet;
+- no unified lineage-aware schema search or context packet yet;
 - no tested Apache Ossie import/export compatibility yet;
 - no multi-user shared graph store yet;
 - no automatic execution of analytical SQL;

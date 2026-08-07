@@ -28,6 +28,8 @@ class StructuredRequest:
     schema: dict[str, object]
     model: str | None = None
     temperature: float = 0.0
+    max_output_tokens: int | None = None
+    reasoning_effort: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

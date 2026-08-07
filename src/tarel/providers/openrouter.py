@@ -10,6 +10,8 @@ from urllib.request import Request, urlopen
 from tarel.providers.config import OpenRouterConfig
 from tarel.providers.contracts import ProviderFailure, StructuredRequest
 
+_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
+
 
 class OpenRouterProvider:
     name = "openrouter"
@@ -35,6 +37,23 @@ class OpenRouterProvider:
             "stream": False,
             "temperature": request.temperature,
         }
+        if request.max_output_tokens is not None:
+            if request.max_output_tokens < 1:
+                raise ProviderFailure(
+                    "invalid_provider_request",
+                    "OpenRouter completion-token limit must be positive.",
+                )
+            payload["max_tokens"] = request.max_output_tokens
+        if request.reasoning_effort is not None:
+            if request.reasoning_effort not in _REASONING_EFFORTS:
+                raise ProviderFailure(
+                    "invalid_provider_request",
+                    "OpenRouter reasoning effort is invalid.",
+                )
+            payload["reasoning"] = {
+                "effort": request.reasoning_effort,
+                "exclude": True,
+            }
         http_request = Request(
             f"{self.config.base_url}/chat/completions",
             data=json.dumps(payload).encode("utf-8"),

@@ -66,6 +66,8 @@ from tarel.connectors.contracts import (
 from tarel.context import DEFAULT_MAX_CONTEXT_CHARACTERS, ContextFailure, ContextResult
 from tarel.demo import DemoFailure
 from tarel.graph.contracts import GraphDocument, GraphFailure
+from tarel.lineage.cli import add_lineage_commands, dispatch_lineage
+from tarel.lineage.contracts import LineageFailure
 from tarel.providers.contracts import ProviderCheck, ProviderFailure
 from tarel.relationships.core import RelationshipFailure
 from tarel.retrieval.contracts import RetrievalFailure
@@ -347,6 +349,8 @@ def build_parser() -> argparse.ArgumentParser:
     graph_show.add_argument("name")
     _add_format_argument(graph_show)
 
+    add_lineage_commands(subcommands)
+
     search = subcommands.add_parser(
         "search",
         help="Search graph metadata with lexical, BM25, vector, or hybrid retrieval.",
@@ -599,6 +603,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(arguments)
 
     try:
+        lineage_result = dispatch_lineage(args)
+        if lineage_result is not None:
+            return lineage_result
+
         if args.command == "version":
             print(__version__)
             return 0
@@ -1179,6 +1187,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ContextFailure,
         DemoFailure,
         GraphFailure,
+        LineageFailure,
         ProviderFailure,
         RelationshipFailure,
         RetrievalFailure,
