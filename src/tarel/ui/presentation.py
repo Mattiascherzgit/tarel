@@ -39,13 +39,19 @@ def browser_workspace(
     editable: bool = False,
     lineage_documents: Iterable[LineageDocument] = (),
 ) -> dict[str, object]:
-    return _browser_payload(
+    payload = _browser_payload(
         tuple(graphs),
         workspaces=(workspace,),
         editable=editable,
         lineage_documents=tuple(lineage_documents),
         scope=scope,
     )
+    objects = payload["objects"]
+    edges = payload["edges"]
+    if isinstance(objects, list) and isinstance(edges, list):
+        edges.extend(_workspace_relationship_payloads(workspace, objects))
+        edges.sort(key=lambda item: str(item["id"]))
+    return payload
 
 
 def _browser_payload(
@@ -397,8 +403,10 @@ def _edge_payload(
     source = nodes.get(edge.source_id)
     target = nodes.get(edge.target_id)
     if edge.type == "relationship_candidate":
-        source = nodes.get(str(source.metadata.get("object_id") or "")) if source else None
-        target = nodes.get(str(target.metadata.get("object_id") or "")) if target else None
+        if source is not None and source.type == "field":
+            source = nodes.get(str(source.metadata.get("object_id") or ""))
+        if target is not None and target.type == "field":
+            target = nodes.get(str(target.metadata.get("object_id") or ""))
     if source is None or target is None or source.type not in {"table", "view"}:
         return None
     if target.type not in {"table", "view"}:
@@ -411,6 +419,44 @@ def _edge_payload(
         "target": _ui_id(graph_name, target.id),
         "type": edge.type,
     }
+
+
+def _workspace_relationship_payloads(
+    workspace: WorkspaceDocument,
+    objects: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    by_reference = {
+        (str(item["graph"]), str(item["object_id"])): str(item["id"])
+        for item in objects
+    }
+    payloads = []
+    for relationship in workspace.relationships:
+        source = by_reference.get(
+            (relationship.source.graph, relationship.source.object_id)
+        )
+        target = by_reference.get(
+            (relationship.target.graph, relationship.target.object_id)
+        )
+        if source is None or target is None:
+            continue
+        payloads.append(
+            {
+                "graph": None,
+                "id": f"workspace::{workspace.name}::{relationship.id}",
+                "metadata": {
+                    "from_field": relationship.source.fields[0],
+                    "origin": relationship.origin,
+                    "reason": relationship.reason,
+                    "state": relationship.state,
+                    "to_field": relationship.target.fields[0],
+                    "workspace": workspace.name,
+                },
+                "source": source,
+                "target": target,
+                "type": "relationship_candidate",
+            }
+        )
+    return payloads
 
 
 def _review_queue(objects: list[dict[str, object]]) -> list[dict[str, object]]:

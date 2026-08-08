@@ -627,6 +627,20 @@ tarel lineage review enterprise-etl ITEM_ID \
 tarel lineage show enterprise-etl --view tables
 ```
 
+Find is deliberately tolerant while tracing remains exact and fail-closed:
+
+```bash
+tarel lineage find "total sales report card" \
+  --lineage reporting --lineage warehouse-etl \
+  --graph warehouse --mode bm25
+tarel lineage find "which visual shows annual revenue" \
+  --lineage reporting --graph warehouse --mode hybrid
+```
+
+Lexical and BM25 modes have no model dependency. Vector and hybrid modes use the optional local
+embedding model and rerank a bounded deterministic candidate set; they do not embed an entire
+enterprise graph on every invocation. Use the returned exact reference with `lineage upstream`.
+
 Missing operational knowledge can be added without editing an imported workflow document. First
 create a job in a separate manual overlay, then add one evidence-backed source-to-target hop:
 
@@ -735,7 +749,8 @@ workspace
 ```
 
 Zones are explicit overlapping sets of tables and views. They may cross schemas and areas within
-one system.
+one system. Explicit workspace relationships connect fields across independent graphs without
+rewriting either source graph.
 
 ```bash
 tarel workspace create enterprise
@@ -748,11 +763,25 @@ tarel workspace zone define enterprise commercial revenue \
   --object retail-demo:main.D_DATE
 tarel workspace zone show enterprise commercial revenue
 tarel workspace scope enterprise --system commercial --zone revenue
+
+tarel workspace relationship add enterprise \
+  --from retail-demo:main.F_SLS_01.CustomerId \
+  --to erp:public.Customer.CustomerId \
+  --reason "Confirmed shared customer identifier"
+tarel workspace relationship validate enterprise RELATIONSHIP_ID \
+  --reason "Reviewed with both source owners"
+
+tarel search enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+tarel context build enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
 ```
 
 Change Radar reports which areas and zones are affected by a graph refresh without rewriting their
 definitions automatically. Scope resolution is deterministic and emits a stable hash; repeated
-values of one facet form a union, while different facets narrow the result. See
+values of one facet form a union, while different facets narrow the result. Search and context use
+that same resolved object set. Context expands only through declared foreign keys and
+human-validated relationship candidates, including validated cross-graph relationships. See
 [Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md).
 
 ## Local persistence and data boundaries

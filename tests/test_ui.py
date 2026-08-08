@@ -251,6 +251,24 @@ class UIBackendTests(TestCase):
                 main(
                     [
                         "workspace",
+                        "relationship",
+                        "add",
+                        "enterprise",
+                        "--from",
+                        "sales:mart.FactSales.DateKey",
+                        "--to",
+                        "sales-copy:mart.DimDate.DateKey",
+                        "--reason",
+                        "Shared date dimension across graph snapshots.",
+                        "--validated",
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "workspace",
                         "area",
                         "define",
                         "enterprise",
@@ -274,6 +292,9 @@ class UIBackendTests(TestCase):
         self.assertTrue(all("::object:" in item["id"] for item in payload["objects"]))
         self.assertEqual(payload["scope"]["workspace"], "enterprise")
         self.assertEqual(len(payload["revision"]), 64)
+        cross_graph = [item for item in payload["edges"] if item["graph"] is None]
+        self.assertEqual(len(cross_graph), 1)
+        self.assertEqual(cross_graph[0]["metadata"]["state"], "validated")
 
     def test_create_manual_job_hop_and_review_it_from_the_ui(self) -> None:
         job_result = self.backend.mutate(

@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Protocol, TypeVar
 
 from tarel.graph.contracts import GraphDocument, GraphNode
+from tarel.relationships.core import RelationshipFailure, resolve_field
 from tarel.workspaces.contracts import (
     Area,
     SchemaReference,
     WorkspaceDocument,
     WorkspaceFailure,
+    WorkspaceRelationship,
+    WorkspaceRelationshipEndpoint,
     WorkspaceSystem,
     Zone,
     ZoneMember,
@@ -143,6 +147,97 @@ def define_zone(
     return updated
 
 
+def add_workspace_relationship(
+    workspace: WorkspaceDocument,
+    *,
+    source_reference: str,
+    target_reference: str,
+    graphs: Mapping[str, GraphDocument],
+    reason: str,
+    validated: bool = False,
+) -> tuple[WorkspaceDocument, WorkspaceRelationship]:
+    """Persist one explicit join whose endpoints may belong to different graphs."""
+    if not reason.strip():
+        raise WorkspaceFailure(
+            "missing_relationship_reason",
+            "A workspace relationship requires a non-empty reason.",
+        )
+    source = _resolve_workspace_field(source_reference, graphs)
+    target = _resolve_workspace_field(target_reference, graphs)
+    if source == target:
+        raise WorkspaceFailure(
+            "invalid_relationship_pair",
+            "Workspace relationship endpoints must be different fields.",
+        )
+    pair_key = frozenset((_endpoint_key(source), _endpoint_key(target)))
+    if any(
+        frozenset((_endpoint_key(item.source), _endpoint_key(item.target))) == pair_key
+        for item in workspace.relationships
+    ):
+        raise WorkspaceFailure(
+            "relationship_exists",
+            "A workspace relationship already exists for these fields.",
+        )
+    digest = hashlib.sha256(
+        "\n".join(sorted(pair_key)).encode("utf-8")
+    ).hexdigest()[:20]
+    relationship = WorkspaceRelationship(
+        id=f"rel-{digest}",
+        source=source,
+        target=target,
+        state="validated" if validated else "draft",
+        origin="human",
+        reason=reason.strip(),
+    )
+    updated = replace(
+        workspace,
+        relationships=tuple(
+            sorted((*workspace.relationships, relationship), key=lambda item: item.id)
+        ),
+    )
+    validate_workspace(updated)
+    validate_workspace_references(updated, graphs)
+    return updated, relationship
+
+
+def decide_workspace_relationship(
+    workspace: WorkspaceDocument,
+    relationship_id: str,
+    *,
+    state: str,
+    reason: str,
+) -> tuple[WorkspaceDocument, WorkspaceRelationship]:
+    if state not in {"validated", "rejected"}:
+        raise WorkspaceFailure(
+            "invalid_relationship_state",
+            f"Unsupported workspace relationship state: {state}",
+        )
+    if not reason.strip():
+        raise WorkspaceFailure(
+            "missing_relationship_reason",
+            "A workspace relationship decision requires a non-empty reason.",
+        )
+    selected = next(
+        (item for item in workspace.relationships if item.id == relationship_id),
+        None,
+    )
+    if selected is None:
+        raise WorkspaceFailure(
+            "relationship_not_found",
+            f"Workspace relationship not found: {relationship_id}",
+        )
+    updated_relationship = replace(selected, state=state, reason=reason.strip())
+    updated = replace(
+        workspace,
+        relationships=tuple(
+            updated_relationship if item.id == relationship_id else item
+            for item in workspace.relationships
+        ),
+    )
+    validate_workspace(updated)
+    return updated, updated_relationship
+
+
 def parse_schema_reference(reference: str) -> SchemaReference:
     graph, separator, namespace = reference.partition(":")
     if not separator or not graph or not namespace:
@@ -246,6 +341,41 @@ def validate_system_references(
                 )
 
 
+def validate_workspace_references(
+    workspace: WorkspaceDocument,
+    graphs: Mapping[str, GraphDocument],
+) -> None:
+    for system in workspace.systems:
+        validate_system_references(system, graphs)
+    for relationship in workspace.relationships:
+        for endpoint in (relationship.source, relationship.target):
+            graph = graphs.get(endpoint.graph)
+            if graph is None:
+                raise WorkspaceFailure(
+                    "graph_not_found",
+                    f"Graph not found: {endpoint.graph}",
+                )
+            node = graph.node_by_id().get(endpoint.object_id)
+            if node is None or node.type not in {"table", "view"}:
+                raise WorkspaceFailure(
+                    "relationship_object_not_found",
+                    f"Workspace relationship {relationship.id} references an unknown object "
+                    f"in {endpoint.graph}: {endpoint.object_id}",
+                )
+            available = {
+                field.label.casefold()
+                for field in graph.nodes
+                if field.type == "field" and field.metadata.get("object_id") == node.id
+            }
+            for field_name in endpoint.fields:
+                if field_name.casefold() not in available:
+                    raise WorkspaceFailure(
+                        "relationship_field_not_found",
+                        f"Workspace relationship {relationship.id} references an unknown field "
+                        f"on {endpoint.graph}:{node.label}: {field_name}",
+                    )
+
+
 def _resolve_object_reference(
     reference: str,
     graphs: Mapping[str, GraphDocument],
@@ -268,6 +398,34 @@ def _resolve_object_reference(
             f"Table or view not found in graph {graph_name}: {label}",
         )
     return ZoneMember(graph=graph_name, object_id=matches[0].id)
+
+
+def _resolve_workspace_field(
+    reference: str,
+    graphs: Mapping[str, GraphDocument],
+) -> WorkspaceRelationshipEndpoint:
+    graph_name, separator, field_reference = reference.partition(":")
+    if not separator or not graph_name or not field_reference:
+        raise WorkspaceFailure(
+            "invalid_field_reference",
+            f"Workspace field reference must use GRAPH:NAMESPACE.OBJECT.FIELD: {reference}",
+        )
+    graph = graphs.get(graph_name)
+    if graph is None:
+        raise WorkspaceFailure("graph_not_found", f"Graph not found: {graph_name}")
+    try:
+        resolved = resolve_field(graph, field_reference)
+    except RelationshipFailure as exc:
+        raise WorkspaceFailure(exc.code, str(exc)) from exc
+    return WorkspaceRelationshipEndpoint(
+        graph=graph_name,
+        object_id=resolved.object_node.id,
+        fields=(resolved.field_node.label,),
+    )
+
+
+def _endpoint_key(endpoint: WorkspaceRelationshipEndpoint) -> str:
+    return "\x1f".join((endpoint.graph, endpoint.object_id, *endpoint.fields))
 
 
 def _graph_namespaces(graph: GraphDocument) -> set[str]:

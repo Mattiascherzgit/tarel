@@ -9,6 +9,7 @@ from typing import Any
 
 WORKSPACE_CONTRACT_VERSION = "tarel.workspace.v0.1"
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+_RELATIONSHIP_STATES = frozenset({"draft", "rejected", "validated"})
 
 
 class WorkspaceFailure(RuntimeError):
@@ -46,6 +47,66 @@ class ZoneMember:
         return cls(
             graph=_required_string(data, "graph"),
             object_id=_required_string(data, "object_id"),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceRelationshipEndpoint:
+    graph: str
+    object_id: str
+    fields: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "fields": list(self.fields),
+            "graph": self.graph,
+            "object_id": self.object_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkspaceRelationshipEndpoint:
+        return cls(
+            graph=_required_string(data, "graph"),
+            object_id=_required_string(data, "object_id"),
+            fields=tuple(_string_list(data, "fields")),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceRelationship:
+    id: str
+    source: WorkspaceRelationshipEndpoint
+    target: WorkspaceRelationshipEndpoint
+    state: str
+    origin: str
+    reason: str
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "id": self.id,
+            "origin": self.origin,
+            "reason": self.reason,
+            "source": self.source.to_dict(),
+            "state": self.state,
+            "target": self.target.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> WorkspaceRelationship:
+        source = data.get("source")
+        target = data.get("target")
+        if not isinstance(source, dict) or not isinstance(target, dict):
+            raise WorkspaceFailure(
+                "invalid_workspace",
+                "Workspace relationship endpoints must be objects.",
+            )
+        return cls(
+            id=_required_string(data, "id"),
+            source=WorkspaceRelationshipEndpoint.from_dict(source),
+            target=WorkspaceRelationshipEndpoint.from_dict(target),
+            state=_required_string(data, "state"),
+            origin=_required_string(data, "origin"),
+            reason=_required_string(data, "reason"),
         )
 
 
@@ -152,12 +213,17 @@ class WorkspaceDocument:
     systems: tuple[WorkspaceSystem, ...] = ()
     description: str | None = None
     contract_version: str = WORKSPACE_CONTRACT_VERSION
+    relationships: tuple[WorkspaceRelationship, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
         return {
             "contract_version": self.contract_version,
             "description": self.description,
             "name": self.name,
+            "relationships": [
+                item.to_dict()
+                for item in sorted(self.relationships, key=lambda item: item.id)
+            ],
             "systems": [
                 item.to_dict() for item in sorted(self.systems, key=lambda item: item.name)
             ],
@@ -171,12 +237,19 @@ class WorkspaceDocument:
                 "Unsupported TAREL workspace contract.",
             )
         systems = _object_list(data, "systems")
+        relationships = _object_list(data, "relationships", required=False)
         workspace = cls(
             name=_required_string(data, "name"),
             systems=tuple(
                 sorted(
                     (WorkspaceSystem.from_dict(item) for item in systems),
                     key=lambda item: item.name,
+                )
+            ),
+            relationships=tuple(
+                sorted(
+                    (WorkspaceRelationship.from_dict(item) for item in relationships),
+                    key=lambda item: item.id,
                 )
             ),
             description=_optional_string(data.get("description"), "description"),
@@ -277,6 +350,39 @@ def validate_workspace(workspace: WorkspaceDocument) -> None:
                         f"{member.graph}",
                     )
 
+    _require_unique((item.id for item in workspace.relationships), "workspace relationship")
+    known_graphs = set(graph_owners)
+    for relationship in workspace.relationships:
+        _validate_identifier(relationship.id, "workspace relationship")
+        if relationship.state not in _RELATIONSHIP_STATES:
+            raise WorkspaceFailure(
+                "invalid_workspace",
+                f"Invalid workspace relationship state: {relationship.state}",
+            )
+        if not relationship.origin.strip() or not relationship.reason.strip():
+            raise WorkspaceFailure(
+                "invalid_workspace",
+                f"Workspace relationship requires origin and reason: {relationship.id}",
+            )
+        for endpoint in (relationship.source, relationship.target):
+            if endpoint.graph not in known_graphs:
+                raise WorkspaceFailure(
+                    "graph_outside_workspace",
+                    f"Relationship {relationship.id} references graph outside the workspace: "
+                    f"{endpoint.graph}",
+                )
+            if not endpoint.object_id or not endpoint.fields:
+                raise WorkspaceFailure(
+                    "invalid_workspace",
+                    f"Workspace relationship endpoint is incomplete: {relationship.id}",
+                )
+            _require_unique(endpoint.fields, f"field in relationship {relationship.id}")
+        if relationship.source == relationship.target:
+            raise WorkspaceFailure(
+                "invalid_workspace",
+                f"Workspace relationship endpoints must differ: {relationship.id}",
+            )
+
 
 def _required_string(data: dict[str, Any], key: str) -> str:
     value = data.get(key)
@@ -299,8 +405,13 @@ def _optional_string(value: Any, key: str) -> str | None:
     return value
 
 
-def _object_list(data: dict[str, Any], key: str) -> list[dict[str, Any]]:
-    value = data.get(key)
+def _object_list(
+    data: dict[str, Any],
+    key: str,
+    *,
+    required: bool = True,
+) -> list[dict[str, Any]]:
+    value = data.get(key, [] if not required else None)
     if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
         raise WorkspaceFailure(
             "invalid_workspace",

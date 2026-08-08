@@ -67,9 +67,10 @@ class SearchHit:
     matched_terms: tuple[str, ...]
     reasons: tuple[str, ...]
     fields: tuple[FieldSearchHit, ...]
+    source_graph: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "fields": [field.to_dict() for field in self.fields],
             "id": self.id,
             "label": self.label,
@@ -78,6 +79,9 @@ class SearchHit:
             "score": self.score,
             "type": self.type,
         }
+        if self.source_graph is not None:
+            payload["source_graph"] = self.source_graph
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,15 +91,27 @@ class SearchResults:
     terms: tuple[str, ...]
     hits: tuple[SearchHit, ...]
     mode: str = "lexical"
+    workspace: str | None = None
+    graphs: tuple[str, ...] = ()
+    scope_hash: str | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "graph": self.graph,
             "hits": [hit.to_dict() for hit in self.hits],
             "mode": self.mode,
             "query": self.query,
             "terms": list(self.terms),
         }
+        if self.workspace is not None:
+            payload.update(
+                {
+                    "graphs": list(self.graphs),
+                    "scope_hash": self.scope_hash,
+                    "workspace": self.workspace,
+                }
+            )
+        return payload
 
 
 def search_graph(
@@ -104,6 +120,7 @@ def search_graph(
     *,
     limit: int = 20,
     namespace: str | None = None,
+    object_ids: frozenset[str] | None = None,
     annotation_states: frozenset[str] = DEFAULT_CONTEXT_ANNOTATION_STATES,
 ) -> SearchResults:
     """Rank tables and views using only persisted graph metadata."""
@@ -122,6 +139,8 @@ def search_graph(
     hits: list[SearchHit] = []
     for node in graph.nodes:
         if node.type not in {"table", "view"}:
+            continue
+        if object_ids is not None and node.id not in object_ids:
             continue
         node_namespace = str(node.metadata.get("namespace") or "")
         if namespace is not None and node_namespace.casefold() != namespace.casefold():

@@ -197,6 +197,7 @@ def search_retrieval(
     mode: str,
     limit: int,
     namespace: str | None = None,
+    object_ids: frozenset[str] | None = None,
     embedder: EmbeddingBackend | None = None,
     model_path: Path | None = None,
     store: FileRetrievalIndex | None = None,
@@ -216,6 +217,7 @@ def search_retrieval(
         document
         for document in build_retrieval_documents(graph, annotation_states=annotation_states)
         if namespace is None or document.namespace.casefold() == namespace.casefold()
+        if object_ids is None or document.object_id in object_ids
     )
     candidate_limit = max(20, min(len(documents), limit * 5))
     bm25_results = (
@@ -233,6 +235,7 @@ def search_retrieval(
             (document, vector)
             for document, vector in zip(indexed_documents, vectors, strict=True)
             if namespace is None or document.namespace.casefold() == namespace.casefold()
+            if object_ids is None or document.object_id in object_ids
         )
         query_vector = embedder.embed_query(query)
         vector_results = _rank_vectors(indexed, query_vector, limit=candidate_limit)

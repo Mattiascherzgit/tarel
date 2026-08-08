@@ -32,9 +32,29 @@ class ContextScope:
 
     mode: str = "retrieval"
     namespace: str | None = None
+    workspace: str | None = None
+    scope_hash: str | None = None
+    systems: tuple[str, ...] = ()
+    graphs: tuple[str, ...] = ()
+    areas: tuple[str, ...] = ()
+    schemas: tuple[str, ...] = ()
+    zones: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, object]:
-        return {"mode": self.mode, "namespace": self.namespace}
+        payload: dict[str, object] = {"mode": self.mode, "namespace": self.namespace}
+        if self.workspace is not None:
+            payload.update(
+                {
+                    "areas": list(self.areas),
+                    "graphs": list(self.graphs),
+                    "scope_hash": self.scope_hash,
+                    "schemas": list(self.schemas),
+                    "systems": list(self.systems),
+                    "workspace": self.workspace,
+                    "zones": list(self.zones),
+                }
+            )
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

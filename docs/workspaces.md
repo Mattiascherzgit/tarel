@@ -23,6 +23,10 @@ system. A zone may cross schemas and areas, and the same object may belong to se
 membership is stored through the graph name and stable object ID; the CLI resolves human-readable
 `GRAPH:NAMESPACE.OBJECT` references before persistence.
 
+A **workspace relationship** is an explicit field-level join between graph objects. It remains in
+the workspace instead of being copied into either source graph and always carries review state,
+origin, and a reason.
+
 ## CLI workflow
 
 Create a workspace and assign existing graphs to a system:
@@ -68,6 +72,35 @@ names are accepted when unambiguous; otherwise use `SYSTEM:NAME`. The output inc
 resolved object's system, area, graph, schema, zones, stable object ID, and a deterministic scope
 hash.
 
+Use the exact same scope for retrieval and context compilation:
+
+```bash
+tarel search enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+tarel context build enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+```
+
+The positional name remains a graph unless `--workspace` is present. `--scope-schema` accepts
+qualified `GRAPH:NAMESPACE` values; `--namespace` remains the single-graph filter. Workspace search
+qualifies every hit with its owning graph. The resulting context packet records the workspace,
+resolved graphs, selection facets, and scope hash in its stable scope.
+
+Add a graph-spanning relationship as a draft, then make the human decision explicit:
+
+```bash
+tarel workspace relationship add enterprise \
+  --from adventureworks_dw:dbo.FactInternetSales.CustomerKey \
+  --to erp:public.Customer.CustomerKey \
+  --reason "Candidate shared customer identifier"
+tarel workspace relationship validate enterprise RELATIONSHIP_ID \
+  --reason "Checked with the ERP and warehouse owners"
+tarel workspace relationship list enterprise
+```
+
+Draft and rejected relationships remain visible evidence but are never used for context expansion.
+Only validated cross-graph relationships are projected as trusted joins.
+
 The optional UI consumes this same resolver:
 
 ```bash
@@ -91,10 +124,11 @@ a future shared database adapter without changing the contract used by the CLI a
 
 TAREL keeps source graphs independent and makes the workspace a separate referencing document. A
 zone therefore never owns or duplicates a graph. This supports overlapping analytical slices and
-later compilation of stable system-, area-, schema-, or zone-level agent context.
+compilation of stable system-, area-, schema-, or zone-level agent context. Search and context use
+a deterministic in-memory projection; the persisted source graphs are not rewritten.
 
 ## Deliberately deferred
 
-The first contract does not infer areas or zones, use regular expressions, nest zones, grant
-permissions, or alter context compilation. Multi-graph context packets, stale-reference repair,
+The first contract does not infer areas, zones, or graph-spanning relationships; use regular
+expressions; nest zones; or grant permissions. Cross-graph value profiling, stale-reference repair,
 and LLM context-caching policies remain separate follow-up slices.
