@@ -14,7 +14,12 @@ from tarel.lineage.analysis_cache import (
     LineageAnalysisCacheIdentity,
 )
 from tarel.lineage.change_store import FileLineageChangeStore
-from tarel.lineage.contracts import LineageDocument, LineageFailure
+from tarel.lineage.contracts import (
+    LineageDefinition,
+    LineageDocument,
+    LineageFailure,
+    LineageWriteUnit,
+)
 from tarel.lineage.core import (
     ProcessStep,
     TableLineage,
@@ -24,8 +29,10 @@ from tarel.lineage.core import (
     record_lineage_analysis_failure,
     table_lineage,
 )
+from tarel.lineage.manual import add_manual_hop, add_manual_job, create_manual_lineage
 from tarel.lineage.refresh import LineageRefreshReport, refresh_lineage
 from tarel.lineage.review import LineageReviewItem, decide_lineage_item, list_lineage_items
+from tarel.lineage.revision import lineage_revision
 from tarel.lineage.source import LineageInput, load_lineage_input
 from tarel.lineage.status import LineageStatus, lineage_status
 from tarel.lineage.store import FileLineageStore
@@ -72,6 +79,20 @@ class LineageProviderRunResult:
     provider_requests: int
 
 
+@dataclass(frozen=True, slots=True)
+class ManualJobResult:
+    document: LineageDocument
+    definition: LineageDefinition
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class ManualHopResult:
+    document: LineageDocument
+    item: LineageWriteUnit
+    path: Path
+
+
 def build_lineage_use_case(name: str, *, source_path: Path) -> LineageChangeResult:
     store = FileLineageStore()
     source = load_lineage_input(source_path)
@@ -93,6 +114,64 @@ def build_lineage_use_case(name: str, *, source_path: Path) -> LineageChangeResu
 
 def load_lineage_use_case(name: str) -> LineageDocument:
     return FileLineageStore().load(name)
+
+
+def add_manual_job_use_case(
+    name: str,
+    *,
+    kind: str,
+    job_name: str,
+    qualified_name: str,
+    language: str,
+    source_reference: str,
+    description: str,
+    expected_revision: str | None = None,
+) -> ManualJobResult:
+    store = FileLineageStore()
+    document = store.load(name) if store.exists(name) else create_manual_lineage(name)
+    _require_expected_revision(document, expected_revision)
+    updated, definition = add_manual_job(
+        document,
+        kind=kind,
+        name=job_name,
+        qualified_name=qualified_name,
+        language=language,
+        source_reference=source_reference,
+        description=description,
+    )
+    return ManualJobResult(updated, definition, store.save(updated))
+
+
+def add_manual_hop_use_case(
+    name: str,
+    *,
+    job_reference: str,
+    source: str,
+    target: str,
+    operation: str,
+    role: str,
+    evidence_reference: str,
+    reason: str,
+    line_start: int = 1,
+    line_end: int = 1,
+    expected_revision: str | None = None,
+) -> ManualHopResult:
+    store = FileLineageStore()
+    document = store.load(name)
+    _require_expected_revision(document, expected_revision)
+    updated, item = add_manual_hop(
+        document,
+        job_reference=job_reference,
+        source=source,
+        target=target,
+        operation=operation,
+        role=role,
+        evidence_reference=evidence_reference,
+        reason=reason,
+        line_start=line_start,
+        line_end=line_end,
+    )
+    return ManualHopResult(updated, item, store.save(updated))
 
 
 def next_lineage_task_use_case(
@@ -133,10 +212,13 @@ def decide_lineage_item_use_case(
     *,
     decision: str,
     reason: str,
+    expected_revision: str | None = None,
 ) -> LineageReviewResult:
     store = FileLineageStore()
+    current = store.load(name)
+    _require_expected_revision(current, expected_revision)
     document, item = decide_lineage_item(
-        store.load(name),
+        current,
         claim_id,
         decision=decision,
         reason=reason,
@@ -384,6 +466,17 @@ def trace_upstream_use_case(
     if selected is None:
         return trace_upstream(documents, graphs, reference, max_hops=max_hops)
     return trace_upstream(documents, graphs, reference, max_hops=max_hops, states=selected)
+
+
+def _require_expected_revision(
+    document: LineageDocument,
+    expected_revision: str | None,
+) -> None:
+    if expected_revision is not None and lineage_revision(document) != expected_revision:
+        raise LineageFailure(
+            "stale_lineage",
+            "The lineage document changed after it was loaded. Reload before saving.",
+        )
 
 
 def _load_lineage_documents(names: tuple[str, ...]) -> tuple[LineageDocument, ...]:

@@ -349,6 +349,25 @@ def build_parser() -> argparse.ArgumentParser:
     graph_show.add_argument("name")
     _add_format_argument(graph_show)
 
+    ui = subcommands.add_parser(
+        "ui",
+        help="Open the optional local graph, lineage, and annotation browser.",
+    )
+    ui.add_argument("graph", help="Local graph to inspect.")
+    ui.add_argument(
+        "--lineage",
+        action="append",
+        dest="lineages",
+        help="Lineage document to include; repeat for multiple documents.",
+    )
+    ui.add_argument(
+        "--edit",
+        action="store_true",
+        help="Allow explicit annotation, lineage, relationship, and zone changes.",
+    )
+    ui.add_argument("--port", type=int, default=0, help="Loopback port; 0 selects a free port.")
+    ui.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
+
     add_lineage_commands(subcommands)
 
     search = subcommands.add_parser(
@@ -610,6 +629,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "version":
             print(__version__)
             return 0
+
+        if args.command == "ui":
+            from tarel.ui.server import UIFailure, run_ui
+
+            try:
+                return run_ui(
+                    args.graph,
+                    lineages=tuple(args.lineages or ()),
+                    editable=args.edit,
+                    port=args.port,
+                    open_browser=not args.no_open,
+                )
+            except UIFailure as exc:
+                print(f"error [{exc.code}]: {exc}", file=sys.stderr)
+                return 2
 
         if args.command == "demo" and args.demo_command == "create":
             result = create_demo_use_case(

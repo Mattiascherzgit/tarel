@@ -198,6 +198,35 @@ tarel annotation validate retail-demo main.D_CHNL \
 Every proposal covers the selected object and all supplied fields. Samples are input-only: they
 are not persisted in the graph and must not be repeated in generated descriptions.
 
+#### Optional local browser review
+
+When a human wants to inspect the topology or work through semantic proposals visually, start the
+local browser UI. It uses the same application operations as the CLI and SDK:
+
+```bash
+# Read-only graph and annotation inspection
+tarel ui retail-demo
+
+# Add selected lineage documents and explicitly enable review changes
+tarel ui retail-demo \
+  --lineage REPORT_LINEAGE \
+  --lineage ETL_LINEAGE \
+  --edit
+```
+
+The UI binds only to `127.0.0.1`, makes no external requests, and adds no Python dependency. Its
+graph view focuses on one table and its immediate relationships instead of rendering an unreadable
+full-schema hairball. The annotation queue puts table and view descriptions first, keeps evidence
+beside the editor, and can approve a table together with all field proposals. Zones can be created
+from a selected object; additional objects can then be dragged onto the zone. In edit mode, the UI
+can also create a manual procedure or script and connect one source object to one target object
+through that job. These entries live in a separate manual overlay, and every new hop starts as a
+reviewable draft.
+
+The default is read-only. `--edit` is required for annotation decisions and workspace changes.
+Every graph write carries its loaded revision, so a stale browser tab cannot silently overwrite a
+newer CLI or SDK change. Manual lineage writes and decisions use the same revision protection.
+
 ### 4. Discover the deliberately missing relationship
 
 `F_SLS_02.RSLR_KEY` plausibly joins `D_RSLR.RSLR_KEY`, but the demo intentionally declares no
@@ -590,6 +619,32 @@ tarel lineage review enterprise-etl ITEM_ID \
 tarel lineage show enterprise-etl --view tables
 ```
 
+Missing operational knowledge can be added without editing an imported workflow document. First
+create a job in a separate manual overlay, then add one evidence-backed source-to-target hop:
+
+```bash
+tarel lineage add-job warehouse-manual \
+  --kind procedure \
+  --job-name LoadFactSales \
+  --qualified-name etl.LoadFactSales \
+  --language tsql \
+  --source-reference runbook:sales-load \
+  --description "Loads reviewed sales rows into the fact table."
+
+tarel lineage add-hop warehouse-manual \
+  --job etl.LoadFactSales \
+  --source stage.Sales \
+  --target mart.FactSales \
+  --operation insert \
+  --role business_data \
+  --evidence-reference runbook:sales-load \
+  --reason "Confirmed by the warehouse owner."
+```
+
+The hop is a normal draft lineage item: `lineage review` can validate or reject it, and
+`lineage upstream` traverses it when `--lineage warehouse-manual` is selected. Keeping manual
+knowledge separate means refreshing SQL Agent, Airflow, JSON, or file imports cannot erase it.
+
 Running `lineage build` again is an idempotent refresh. Unchanged analysis is preserved. Changed
 definitions become pending again, their existing claims move to `review_required`, and removed or
 stale knowledge remains in a revision-bound change report instead of disappearing silently.
@@ -735,7 +790,8 @@ Security defaults:
 - no multi-user shared graph store yet;
 - no automatic execution of analytical SQL;
 - no autonomous activation of generated connector code -- activation remains a human trust gate;
-- no web UI, catalog server, or mandatory cloud service.
+- no catalog server or mandatory cloud service; the optional browser UI is loopback-only and
+  single-user.
 
 These are scope boundaries, not hidden fallbacks. Unsupported capabilities fail visibly.
 
