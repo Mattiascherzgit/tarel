@@ -47,6 +47,7 @@ from tarel.context import (
     compile_context,
     compile_context_from_search,
 )
+from tarel.context_output import ContextScope
 from tarel.context_packets import (
     ContextPacketDiff,
     ContextPacketImpact,
@@ -85,11 +86,18 @@ from tarel.retrieval.local import (
     resolve_model_path,
     sha256_file,
 )
-from tarel.search import SearchResults, search_graph
-from tarel.workspaces.contracts import SchemaReference, WorkspaceDocument, WorkspaceFailure
+from tarel.search import SearchFailure, SearchResults, search_graph
+from tarel.workspaces.contracts import (
+    SchemaReference,
+    WorkspaceDocument,
+    WorkspaceFailure,
+    WorkspaceRelationship,
+)
 from tarel.workspaces.core import (
     ResolvedZone,
+    add_workspace_relationship,
     create_workspace,
+    decide_workspace_relationship,
     define_area,
     define_system,
     define_zone,
@@ -98,6 +106,9 @@ from tarel.workspaces.core import (
     resolve_zone,
 )
 from tarel.workspaces.impact import WorkspaceChangeImpact, workspace_change_impacts
+from tarel.workspaces.projection import project_workspace_scope
+from tarel.workspaces.retrieval import combine_workspace_search
+from tarel.workspaces.scope import ResolvedScope, ScopeSelection, resolve_scope
 from tarel.workspaces.store import FileWorkspaceStore
 
 
@@ -160,6 +171,13 @@ class GraphRefreshResult:
 class WorkspaceChangeResult:
     workspace: WorkspaceDocument
     path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class WorkspaceRelationshipChangeResult:
+    workspace: WorkspaceDocument
+    path: Path
+    relationship: WorkspaceRelationship
 
 
 def create_demo_use_case(
@@ -389,6 +407,58 @@ def load_workspace_use_case(name: str) -> WorkspaceDocument:
     return FileWorkspaceStore().load(name)
 
 
+def resolve_workspace_scope_use_case(
+    workspace_name: str,
+    *,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
+) -> ResolvedScope:
+    _workspace, _loaded, scope = _load_workspace_scope(
+        workspace_name,
+        systems=systems,
+        graphs=graphs,
+        areas=areas,
+        schemas=schemas,
+        zones=zones,
+    )
+    return scope
+
+
+def _load_workspace_scope(
+    workspace_name: str,
+    *,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
+) -> tuple[WorkspaceDocument, dict[str, GraphDocument], ResolvedScope]:
+    workspace = FileWorkspaceStore().load(workspace_name)
+    graph_names = {
+        graph_name
+        for system in workspace.systems
+        if not systems or system.name in systems
+        for graph_name in system.graphs
+    }
+    graph_store = FileGraphStore()
+    loaded = {name: graph_store.load(name) for name in sorted(graph_names)}
+    scope = resolve_scope(
+        workspace,
+        loaded,
+        ScopeSelection(
+            systems=systems,
+            graphs=graphs,
+            areas=areas,
+            schemas=schemas,
+            zones=zones,
+        ),
+    )
+    return workspace, loaded, scope
+
+
 def define_workspace_system_use_case(
     workspace_name: str,
     system_name: str,
@@ -461,6 +531,56 @@ def define_workspace_zone_use_case(
     return WorkspaceChangeResult(workspace=updated, path=workspace_store.save(updated))
 
 
+def add_workspace_relationship_use_case(
+    workspace_name: str,
+    *,
+    source_reference: str,
+    target_reference: str,
+    reason: str,
+    validated: bool = False,
+) -> WorkspaceRelationshipChangeResult:
+    workspace_store = FileWorkspaceStore()
+    graph_store = FileGraphStore()
+    workspace = workspace_store.load(workspace_name)
+    graph_names = {name for system in workspace.systems for name in system.graphs}
+    graphs = {name: graph_store.load(name) for name in sorted(graph_names)}
+    updated, relationship = add_workspace_relationship(
+        workspace,
+        source_reference=source_reference,
+        target_reference=target_reference,
+        graphs=graphs,
+        reason=reason,
+        validated=validated,
+    )
+    return WorkspaceRelationshipChangeResult(
+        workspace=updated,
+        path=workspace_store.save(updated),
+        relationship=relationship,
+    )
+
+
+def decide_workspace_relationship_use_case(
+    workspace_name: str,
+    relationship_id: str,
+    *,
+    state: str,
+    reason: str,
+) -> WorkspaceRelationshipChangeResult:
+    workspace_store = FileWorkspaceStore()
+    workspace = workspace_store.load(workspace_name)
+    updated, relationship = decide_workspace_relationship(
+        workspace,
+        relationship_id,
+        state=state,
+        reason=reason,
+    )
+    return WorkspaceRelationshipChangeResult(
+        workspace=updated,
+        path=workspace_store.save(updated),
+        relationship=relationship,
+    )
+
+
 def show_workspace_zone_use_case(
     workspace_name: str,
     system_name: str,
@@ -495,13 +615,94 @@ def search_graph_use_case(
         annotation_states,
         validated_only=validated_only,
     )
+    return _search_loaded_graph(
+        graph,
+        query,
+        limit=limit,
+        namespace=namespace,
+        mode=mode,
+        model_path=model_path,
+        n_threads=n_threads,
+        annotation_states=selected_states,
+    )
+
+
+def search_workspace_use_case(
+    workspace_name: str,
+    query: str,
+    *,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
+    limit: int = 20,
+    mode: str = "lexical",
+    model_path: Path | None = None,
+    n_threads: int | None = None,
+    annotation_states: frozenset[str] | None = None,
+    validated_only: bool = False,
+) -> SearchResults:
+    if not 1 <= limit <= 100:
+        raise SearchFailure("invalid_limit", "Search limit must be between 1 and 100.")
+    _workspace, loaded, scope = _load_workspace_scope(
+        workspace_name,
+        systems=systems,
+        graphs=graphs,
+        areas=areas,
+        schemas=schemas,
+        zones=zones,
+    )
+    selected_states = selected_annotation_states(
+        annotation_states,
+        validated_only=validated_only,
+    )
+    resolved_model = resolve_model_path(model_path) if mode in {"vector", "hybrid"} else None
+    embedder = (
+        LlamaCppEmbedding(resolved_model, n_threads=n_threads)
+        if resolved_model is not None
+        else None
+    )
+    results = tuple(
+        _search_loaded_graph(
+            loaded[name],
+            query,
+            limit=100,
+            object_ids=frozenset(
+                item.object_id for item in scope.objects if item.graph == name
+            ),
+            mode=mode,
+            resolved_model=resolved_model,
+            embedder=embedder,
+            annotation_states=selected_states,
+        )
+        for name in scope.graph_names
+    )
+    return combine_workspace_search(scope, results, limit=limit)
+
+
+def _search_loaded_graph(
+    graph: GraphDocument,
+    query: str,
+    *,
+    limit: int,
+    namespace: str | None = None,
+    object_ids: frozenset[str] | None = None,
+    mode: str,
+    model_path: Path | None = None,
+    resolved_model: Path | None = None,
+    embedder: LlamaCppEmbedding | None = None,
+    n_threads: int | None = None,
+    annotation_states: frozenset[str],
+) -> SearchResults:
     if mode == "lexical":
         return search_graph(
             graph,
             query,
             limit=limit,
             namespace=namespace,
-            annotation_states=selected_states,
+            object_ids=object_ids,
+            annotation_states=annotation_states,
         )
     if mode == "bm25":
         return search_retrieval(
@@ -510,18 +711,21 @@ def search_graph_use_case(
             mode=mode,
             limit=limit,
             namespace=namespace,
-            annotation_states=selected_states,
+            object_ids=object_ids,
+            annotation_states=annotation_states,
         )
-    resolved_model = resolve_model_path(model_path)
+    selected_model = resolved_model or resolve_model_path(model_path)
+    selected_embedder = embedder or LlamaCppEmbedding(selected_model, n_threads=n_threads)
     return search_retrieval(
         graph,
         query,
         mode=mode,
         limit=limit,
         namespace=namespace,
-        embedder=LlamaCppEmbedding(resolved_model, n_threads=n_threads),
-        model_path=resolved_model,
-        annotation_states=selected_states,
+        object_ids=object_ids,
+        embedder=selected_embedder,
+        model_path=selected_model,
+        annotation_states=annotation_states,
     )
 
 
@@ -581,6 +785,78 @@ def compile_context_use_case(
         max_fields_per_object=max_fields_per_object,
         max_characters=max_characters,
         annotation_states=selected_states,
+    )
+
+
+def compile_workspace_context_use_case(
+    workspace_name: str,
+    query: str,
+    *,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
+    seed_limit: int = 3,
+    max_objects: int = 10,
+    max_joins: int = 12,
+    max_hops: int = 2,
+    max_fields_per_object: int = 12,
+    max_characters: int = DEFAULT_MAX_CONTEXT_CHARACTERS,
+    mode: str = "lexical",
+    model_path: Path | None = None,
+    n_threads: int | None = None,
+    annotation_states: frozenset[str] | None = None,
+    validated_only: bool = False,
+) -> ContextResult:
+    workspace, loaded, scope = _load_workspace_scope(
+        workspace_name,
+        systems=systems,
+        graphs=graphs,
+        areas=areas,
+        schemas=schemas,
+        zones=zones,
+    )
+    selected_states = selected_annotation_states(
+        annotation_states,
+        validated_only=validated_only,
+    )
+    search = search_workspace_use_case(
+        workspace_name,
+        query,
+        systems=systems,
+        graphs=graphs,
+        areas=areas,
+        schemas=schemas,
+        zones=zones,
+        limit=100,
+        mode=mode,
+        model_path=model_path,
+        n_threads=n_threads,
+        annotation_states=selected_states,
+    )
+    projection = project_workspace_scope(workspace, loaded, scope)
+    selection = scope.selection
+    return compile_context_from_search(
+        projection,
+        search,
+        seed_limit=seed_limit,
+        max_objects=max_objects,
+        max_joins=max_joins,
+        max_hops=max_hops,
+        max_fields_per_object=max_fields_per_object,
+        max_characters=max_characters,
+        annotation_states=selected_states,
+        scope=ContextScope(
+            mode="workspace_retrieval",
+            workspace=workspace_name,
+            scope_hash=scope.scope_hash,
+            systems=tuple(sorted(set(selection.systems))),
+            graphs=scope.graph_names,
+            areas=tuple(sorted(set(selection.areas))),
+            schemas=tuple(sorted(set(selection.schemas))),
+            zones=tuple(sorted(set(selection.zones))),
+        ),
     )
 
 

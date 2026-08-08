@@ -50,6 +50,7 @@ from tarel.providers.contracts import (
     StructuredRequest,
 )
 from tarel.providers.host import load_provider
+from tarel.retrieval.local import LlamaCppEmbedding, resolve_model_path
 
 
 @dataclass(frozen=True, slots=True)
@@ -446,10 +447,23 @@ def find_lineage_references_use_case(
     lineage_names: tuple[str, ...],
     graph_names: tuple[str, ...] = (),
     limit: int = 20,
+    mode: str = "lexical",
+    model_path: Path | None = None,
+    n_threads: int | None = None,
 ) -> tuple[LineageReference, ...]:
     documents = _load_lineage_documents(lineage_names)
     graphs = tuple(FileGraphStore().load(name) for name in graph_names)
-    return find_lineage_references(documents, graphs, query, limit=limit)
+    embedder = None
+    if mode in {"vector", "hybrid"}:
+        embedder = LlamaCppEmbedding(resolve_model_path(model_path), n_threads=n_threads)
+    return find_lineage_references(
+        documents,
+        graphs,
+        query,
+        limit=limit,
+        mode=mode,
+        embedder=embedder,
+    )
 
 
 def trace_upstream_use_case(

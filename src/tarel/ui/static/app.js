@@ -7,6 +7,10 @@ const state = {
   reviewId: null,
   objectKind: "all",
   reviewFilter: "pending",
+  canvasMode: "space",
+  scopeFilters: null,
+  trace: null,
+  traceOnCanvas: false,
   cy: null,
 };
 
@@ -28,24 +32,31 @@ async function api(path, payload) {
 async function load() {
   setFooter("Loading local artifacts…");
   state.data = await api("/api/bootstrap");
+  initializeScopeFilters();
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("mode") === "lineage") state.canvasMode = "lineage";
   if (!state.selectedId && state.data.objects.length) state.selectedId = mostConnectedObject();
   if (!state.reviewId) state.reviewId = nextReview()?.id || null;
   renderAll();
-  const params = new URLSearchParams(window.location.search);
+  $$('[data-canvas-mode]').forEach(button => button.classList.toggle("is-active", button.dataset.canvasMode === state.canvasMode));
   if (params.get("view") === "review") switchView("review");
-  if (params.get("trace")) trace(params.get("trace"));
+  if (params.get("trace")) {
+    await trace(params.get("trace"));
+    if (state.canvasMode === "lineage" && state.trace) showTraceOnCanvas();
+  }
   setFooter("Ready");
 }
 
 function renderAll() {
   const data = state.data;
-  $("#graph-name").textContent = data.graph;
+  $("#graph-name").textContent = data.title || data.graph;
   $("#revision").textContent = data.revision.slice(0, 12);
   $("#revision").title = `Graph revision ${data.revision}`;
   $("#mode").textContent = data.editable ? "Edit enabled" : "Read only";
   $("#mode").className = `mode-badge${data.editable ? " edit" : ""}`;
   $("#review-badge").textContent = String(data.review.filter(item => ["draft", "review_required", "deferred"].includes(item.state)).length);
   renderObjectList();
+  renderScopeFilters();
   renderGraph();
   renderInspector();
   renderZones();
@@ -55,14 +66,14 @@ function renderAll() {
 
 function renderObjectList() {
   const needle = $("#object-search").value.trim().toLowerCase();
-  const objects = state.data.objects.filter(item =>
+  const objects = visibleObjects().filter(item =>
     (state.objectKind === "all" || item.type === state.objectKind) &&
     (!needle || item.label.toLowerCase().includes(needle) || annotationText(item).includes(needle))
   );
   $("#object-list").innerHTML = objects.map(item => `
     <button class="object-row${item.id === state.selectedId ? " is-active" : ""}" data-object="${escapeAttr(item.id)}" draggable="true">
       <span class="kind-icon">${item.type === "view" ? "V" : "T"}</span>
-      <span class="object-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.namespace)} · ${item.fields.length} fields</small></span>
+      <span class="object-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.graph)} · ${escapeHtml(item.namespace)} · ${item.fields.length} fields</small></span>
       <i class="state-dot ${escapeAttr(item.annotation?.state || "missing")}" title="${escapeAttr(item.annotation?.state || "missing")}"></i>
     </button>`).join("") || '<div class="empty-state"><p>No matching objects.</p></div>';
   $$(".object-row").forEach(row => {
@@ -71,37 +82,229 @@ function renderObjectList() {
   });
 }
 
+function initializeScopeFilters() {
+  const facets = {
+    systems: unique(state.data.objects.map(item => item.system).filter(Boolean)),
+    areas: unique(state.data.objects.map(item => item.area_ref).filter(Boolean)),
+    graphs: unique(state.data.objects.map(item => item.graph)),
+    schemas: unique(state.data.objects.map(item => item.schema_ref)),
+    zones: unique(state.data.objects.flatMap(item => item.zones || [])),
+  };
+  if (!state.scopeFilters) {
+    state.scopeFilters = Object.fromEntries(
+      Object.entries(facets).map(([name, values]) => [name, new Set(values)]),
+    );
+  } else {
+    for (const [name, values] of Object.entries(facets)) {
+      const current = state.scopeFilters[name] || new Set();
+      state.scopeFilters[name] = new Set(values.filter(value => current.has(value)));
+    }
+  }
+  state.scopeFacets = facets;
+}
+
+function renderScopeFilters() {
+  const labels = {systems: "Systems", areas: "Areas", graphs: "Graphs", schemas: "Schemas", zones: "Zones"};
+  $("#scope-filters").innerHTML = Object.entries(state.scopeFacets)
+    .filter(([, values]) => values.length)
+    .map(([facet, values]) => `<section class="scope-group"><header><strong>${labels[facet]}</strong><button data-scope-all="${facet}">All</button></header>${values.map(value => `<label><input type="checkbox" data-scope-facet="${facet}" value="${escapeAttr(value)}" ${state.scopeFilters[facet].has(value) ? "checked" : ""}/><span>${escapeHtml(value)}</span></label>`).join("")}</section>`)
+    .join("");
+  $$('[data-scope-facet]').forEach(input => input.addEventListener("change", () => {
+    const selected = state.scopeFilters[input.dataset.scopeFacet];
+    input.checked ? selected.add(input.value) : selected.delete(input.value);
+    applyVisualScope();
+  }));
+  $$('[data-scope-all]').forEach(button => button.addEventListener("click", () => {
+    const facet = button.dataset.scopeAll;
+    state.scopeFilters[facet] = new Set(state.scopeFacets[facet]);
+    applyVisualScope();
+  }));
+  $("#scope-count").textContent = `${visibleObjects().length}/${state.data.objects.length}`;
+}
+
+function applyVisualScope() {
+  if (state.selectedId && !visibleObjects().some(item => item.id === state.selectedId)) {
+    state.selectedId = visibleObjects()[0]?.id || null;
+  }
+  renderScopeFilters();
+  renderObjectList();
+  renderGraph();
+  renderInspector();
+  renderZones();
+  renderReview();
+}
+
+function visibleObjects() {
+  const zoneNarrowed = state.scopeFilters.zones.size < state.scopeFacets.zones.length;
+  return state.data.objects.filter(item =>
+    (!item.system || state.scopeFilters.systems.has(item.system)) &&
+    (!item.area_ref || state.scopeFilters.areas.has(item.area_ref)) &&
+    state.scopeFilters.graphs.has(item.graph) &&
+    state.scopeFilters.schemas.has(item.schema_ref) &&
+    (!zoneNarrowed || (item.zones || []).some(zone => state.scopeFilters.zones.has(zone)))
+  );
+}
+
+function unique(values) { return [...new Set(values)].sort((left, right) => left.localeCompare(right)); }
+
 function renderGraph() {
   const data = state.data;
-  const namespaces = [...new Set(data.objects.map(item => item.namespace))].sort();
+  const scopedObjects = visibleObjects();
+  const connectedObjects = lineageObjectIds();
+  const objects = state.canvasMode === "lineage" && connectedObjects.size
+    ? scopedObjects.filter(item => connectedObjects.has(item.id))
+    : scopedObjects;
+  const objectIds = new Set(objects.map(item => item.id));
+  const lanes = unique(objects.map(item => `${item.system || "Standalone"} · ${item.area || item.graph} · ${item.namespace}`));
   const counts = new Map();
-  const elements = data.objects.map(item => {
-    const lane = namespaces.indexOf(item.namespace);
-    const index = counts.get(item.namespace) || 0;
-    counts.set(item.namespace, index + 1);
-    return {data: {id: item.id, label: item.name, type: item.type, state: item.annotation?.state || "missing", namespace: item.namespace}, position: {x: lane * 280 + (index % 2) * 125, y: Math.floor(index / 2) * 78}};
+  const elements = objects.map(item => {
+    const laneName = `${item.system || "Standalone"} · ${item.area || item.graph} · ${item.namespace}`;
+    const lane = lanes.indexOf(laneName);
+    const index = counts.get(laneName) || 0;
+    counts.set(laneName, index + 1);
+    return {data: {id: item.id, label: item.name, type: item.type, state: item.annotation?.state || "missing", namespace: item.namespace, graph: item.graph, parent: state.canvasMode === "space" ? spaceGroupIds(item).schema : undefined}, position: {x: lane * 300 + (index % 2) * 130, y: Math.floor(index / 2) * 82}};
   });
-  elements.push(...data.edges.map(edge => ({data: {id: edge.id, source: edge.source, target: edge.target, type: edge.type, state: edge.metadata.state || "declared"}})));
+  if (state.canvasMode === "space") {
+    elements.unshift(...spaceGroupElements(objects));
+    elements.push(...data.edges.filter(edge => objectIds.has(edge.source) && objectIds.has(edge.target)).map(edge => ({data: {id: edge.id, source: edge.source, target: edge.target, type: edge.type, state: edge.metadata.state || "declared"}})));
+  } else {
+    elements.push(...lineageElements(objectIds));
+  }
   if (state.cy) state.cy.destroy();
   state.cy = cytoscape({
-    container: $("#graph-canvas"), elements, layout: {name: "preset", fit: true, padding: 75},
+    container: $("#graph-canvas"), elements,
+    layout: state.canvasMode === "space" ? {name: "preset", fit: true, padding: 75} : {name: "breadthfirst", directed: true, fit: true, padding: 75, spacingFactor: 1.25, animate: !state.traceOnCanvas, animationDuration: 260},
     minZoom: .15, maxZoom: 2.3, wheelSensitivity: .18,
     style: [
-      {selector: "node", style: {"background-color": "#181818", "border-color": "#4a4a4a", "border-width": 1, "color": "#ddd", "font-family": "Inter, sans-serif", "font-size": 10, "label": "data(label)", "shape": "round-rectangle", "text-max-width": 104, "text-overflow-wrap": "ellipsis", "text-valign": "center", "width": 112, "height": 42}},
+      {selector: "node", style: {"background-color": "#181818", "border-color": "#4a4a4a", "border-width": 1, "color": "#ddd", "font-family": "Inter, sans-serif", "font-size": 10, "label": "data(label)", "shape": "round-rectangle", "text-max-width": 104, "text-wrap": "ellipsis", "text-valign": "center", "width": 112, "height": 42}},
       {selector: 'node[type = "view"]', style: {"border-color": "#22d3ee"}},
+      {selector: 'node[type = "asset"]', style: {"background-color": "#10202a", "border-color": "#22d3ee", "shape": "diamond"}},
+      {selector: 'node[type = "procedure"], node[type = "query"], node[type = "script"]', style: {"background-color": "#251b38", "border-color": "#a78bfa", "shape": "hexagon"}},
+      {selector: 'node[type = "group-system"]', style: {"background-opacity": .05, "border-color": "#6366f1", "border-style": "solid", "border-width": 2, "label": "data(label)", "text-valign": "top", "text-halign": "center", "padding": 34, "shape": "round-rectangle", "font-size": 12}},
+      {selector: 'node[type = "group-area"]', style: {"background-opacity": .035, "border-color": "#52525b", "border-style": "dashed", "label": "data(label)", "text-valign": "top", "padding": 25, "shape": "round-rectangle", "font-size": 10}},
+      {selector: 'node[type = "group-schema"]', style: {"background-opacity": .02, "border-color": "#303038", "border-style": "dotted", "label": "data(label)", "text-valign": "top", "padding": 18, "shape": "round-rectangle", "font-size": 9}},
       {selector: 'node[state = "draft"], node[state = "review_required"]', style: {"border-color": "#f59e0b", "border-width": 2}},
       {selector: 'node[state = "validated"]', style: {"border-color": "#10b981", "border-width": 2}},
       {selector: "node:selected", style: {"background-color": "#24243a", "border-color": "#818cf8", "border-width": 3}},
       {selector: "edge", style: {"curve-style": "bezier", "line-color": "#3f3f46", "target-arrow-color": "#3f3f46", "target-arrow-shape": "triangle", "width": 1, "opacity": .75}},
       {selector: 'edge[type = "relationship_candidate"]', style: {"line-style": "dashed", "line-color": "#f59e0b", "target-arrow-color": "#f59e0b"}},
+      {selector: 'edge[type = "lineage"]', style: {"line-color": "#6366f1", "target-arrow-color": "#818cf8", "width": 2}},
+      {selector: 'edge[type = "process"]', style: {"line-style": "dashed", "line-color": "#22d3ee", "target-arrow-color": "#22d3ee"}},
       {selector: ".hidden", style: {"display": "none"}},
       {selector: ".dimmed", style: {"opacity": .1}},
       {selector: ".zone-focus", style: {"background-color": "#252547", "border-color": "#818cf8", "opacity": 1}},
+      {selector: ".trace-focus", style: {"opacity": 1, "border-color": "#10b981", "border-width": 3}},
     ],
   });
-  state.cy.on("tap", "node", event => selectObject(event.target.id()));
-  if (state.selectedId) { state.cy.$id(state.selectedId).select(); focusSelected(); }
-  $("#canvas-subtitle").textContent = `${data.objects.length} objects · ${data.edges.length} relationships · ${namespaces.length} schemas`;
+  state.cy.on("tap", 'node[type = "table"], node[type = "view"]', event => selectObject(event.target.id()));
+  state.cy.on("tap", 'node[type = "asset"], node[type = "procedure"], node[type = "query"], node[type = "script"]', event => {
+    const reference = event.target.data("reference");
+    if (!reference) return;
+    $("#lineage-drawer").hidden = false;
+    $("#lineage-reference").value = reference;
+    $("#lineage-status").className = "notice";
+    $("#lineage-status").textContent = "Trace this lineage asset to show its upstream path.";
+  });
+  if (state.selectedId && state.cy.$id(state.selectedId).length) state.cy.$id(state.selectedId).select();
+  if (state.traceOnCanvas && state.trace) setTimeout(focusTrace, 0);
+  $("#canvas-title").textContent = state.canvasMode === "space" ? "Information space" : "Data & process lineage";
+  $("#canvas-subtitle").textContent = state.canvasMode === "space"
+    ? `${objects.length} objects · ${data.edges.filter(edge => objectIds.has(edge.source) && objectIds.has(edge.target)).length} relationships · ${lanes.length} schema spaces`
+    : `${objects.length} graph objects · ${data.lineage_flows.edges.length} lineage edges · ${data.lineages.length} documents`;
+}
+
+function lineageObjectIds() {
+  const objectIds = new Set(state.data.objects.map(item => item.id));
+  const connected = new Set();
+  for (const edge of state.data.lineage_flows?.edges || []) {
+    if (objectIds.has(edge.source)) connected.add(edge.source);
+    if (objectIds.has(edge.target)) connected.add(edge.target);
+  }
+  if (state.traceOnCanvas && state.trace) {
+    for (const hop of state.trace.hops) {
+      for (const reference of [hop.source.reference, hop.target.reference]) {
+        const id = resolveReference(reference);
+        if (id && objectIds.has(id)) connected.add(id);
+      }
+    }
+  }
+  return connected;
+}
+
+function spaceGroupIds(item) {
+  const systemName = item.system || "Standalone";
+  const areaName = item.area || item.graph;
+  return {
+    system: `space-system::${systemName}`,
+    area: `space-area::${systemName}::${areaName}`,
+    schema: `space-schema::${systemName}::${areaName}::${item.graph}::${item.namespace}`,
+  };
+}
+
+function spaceGroupElements(objects) {
+  const groups = new Map();
+  for (const item of objects) {
+    const ids = spaceGroupIds(item);
+    groups.set(ids.system, {data: {id: ids.system, label: item.system || "Standalone graphs", type: "group-system"}});
+    groups.set(ids.area, {data: {id: ids.area, label: item.area || item.graph, type: "group-area", parent: ids.system}});
+    groups.set(ids.schema, {data: {id: ids.schema, label: `${item.graph} · ${item.namespace}`, type: "group-schema", parent: ids.area}});
+  }
+  return [...groups.values()];
+}
+
+function lineageElements(visibleObjectIds) {
+  const flows = state.data.lineage_flows || {nodes: [], edges: []};
+  const trace = state.traceOnCanvas && state.trace ? traceElements(state.trace) : {nodes: [], edges: []};
+  const allEdges = [...flows.edges.map(item => ({...item, type: item.type || "lineage"})), ...trace.edges];
+  const connected = new Set();
+  for (const edge of allEdges) { connected.add(edge.source); connected.add(edge.target); }
+  const nodes = [...flows.nodes, ...trace.nodes]
+    .filter((item, index, values) => values.findIndex(candidate => candidate.id === item.id) === index)
+    .filter(item => connected.has(item.id))
+    .map(item => ({data: {id: item.id, label: item.label || item.reference, reference: item.reference, type: item.kind || "asset", state: item.state || "observed"}}));
+  const known = new Set([...visibleObjectIds, ...nodes.map(item => item.data.id)]);
+  const edges = allEdges
+    .filter(item => known.has(item.source) && known.has(item.target))
+    .map(item => ({data: {id: item.id, source: item.source, target: item.target, type: item.type, state: item.state, relation: item.relation}}));
+  return [...nodes, ...edges];
+}
+
+function traceElements(trace) {
+  const references = new Map();
+  const nodes = [];
+  const resolve = item => {
+    const existing = resolveReference(item.reference);
+    if (existing) return existing;
+    if (!references.has(item.id)) {
+      const id = `trace-ref::${references.size}`;
+      references.set(item.id, id);
+      nodes.push({id, label: item.name || item.reference, reference: item.reference, kind: item.kind || "asset", state: item.annotation_state || "observed"});
+    }
+    return references.get(item.id);
+  };
+  const edges = trace.hops.map(hop => ({id: `trace-edge::${hop.id}`, source: resolve(hop.source), target: resolve(hop.target), type: "lineage", state: hop.state, relation: hop.relation}));
+  resolve(trace.start);
+  trace.origins.forEach(resolve);
+  return {nodes, edges};
+}
+
+function resolveReference(reference) {
+  const needle = String(reference || "").toLowerCase();
+  const objects = state.data.objects.filter(item => [item.id, item.object_id, item.label, item.reference].some(value => String(value || "").toLowerCase() === needle));
+  if (objects.length === 1) return objects[0].id;
+  const lineage = (state.data.lineage_flows.nodes || []).filter(item => String(item.reference || "").toLowerCase() === needle);
+  return lineage.length === 1 ? lineage[0].id : null;
+}
+
+function focusTrace() {
+  const traceIds = new Set(state.trace.hops.flatMap(hop => [resolveReference(hop.source.reference), resolveReference(hop.target.reference)]).filter(Boolean));
+  const traceEdges = state.cy.edges('[id ^= "trace-edge::"]');
+  traceEdges.forEach(edge => { traceIds.add(edge.source().id()); traceIds.add(edge.target().id()); });
+  state.cy.elements().addClass("dimmed");
+  traceEdges.removeClass("dimmed").addClass("trace-focus");
+  traceIds.forEach(id => state.cy.$id(id).removeClass("dimmed").addClass("trace-focus"));
+  const focus = state.cy.elements(".trace-focus");
+  if (focus.length) state.cy.fit(focus, 95);
 }
 
 function selectObject(id) {
@@ -153,7 +356,7 @@ function renderZones() {
   const contexts = [];
   for (const workspace of state.data.workspaces) for (const system of workspace.systems) for (const zone of system.zones) contexts.push({workspace, system, zone});
   $("#zone-list").innerHTML = contexts.map((context, index) => `
-    <article class="zone-card" data-zone-index="${index}"><header><strong>${escapeHtml(context.zone.name)}</strong><small>${context.zone.members.length}</small></header><p>${escapeHtml(context.zone.description || `${context.workspace.name} · ${context.system.name}`)}</p><div class="zone-members">${context.zone.members.map(member => { const object = state.data.objects.find(item => item.id === member.object_id); return `<button class="zone-member" data-focus-object="${escapeAttr(member.object_id)}">${escapeHtml(object?.name || member.object_id)}</button>`; }).join("")}</div></article>`).join("") || '<div class="zone-card"><strong>No zones yet</strong><p>Create one to group objects across schemas.</p></div>';
+    <article class="zone-card" data-zone-index="${index}"><header><strong>${escapeHtml(context.zone.name)}</strong><small>${context.zone.members.length}</small></header><p>${escapeHtml(context.zone.description || `${context.workspace.name} · ${context.system.name}`)}</p><div class="zone-members">${context.zone.members.map(member => { const object = objectForZoneMember(member); return `<button class="zone-member" data-focus-object="${escapeAttr(object?.id || "")}">${escapeHtml(object?.name || `${member.graph}:${member.object_id}`)}</button>`; }).join("")}</div></article>`).join("") || '<div class="zone-card"><strong>No zones yet</strong><p>Create one to group objects across schemas.</p></div>';
   $$(".zone-member").forEach(button => button.addEventListener("click", () => selectObject(button.dataset.focusObject)));
   $$(".zone-card[data-zone-index]").forEach(card => {
     const context = contexts[Number(card.dataset.zoneIndex)];
@@ -164,8 +367,10 @@ function renderZones() {
       event.preventDefault(); card.classList.remove("is-over");
       const objectId = event.dataTransfer.getData("text/tarel-object");
       if (!objectId) return;
-      const memberIds = new Set(context.zone.members.map(item => item.object_id)); memberIds.add(objectId);
-      await saveZone(context.workspace, context.system, context.zone, [...memberIds]);
+      const members = context.zone.members.map(item => ({graph: item.graph, object_id: item.object_id}));
+      const selected = state.data.objects.find(item => item.id === objectId);
+      if (selected && !members.some(item => item.graph === selected.graph && item.object_id === selected.object_id)) members.push({graph: selected.graph, object_id: selected.object_id});
+      await saveZone(context.workspace, context.system, context.zone, members);
     });
   });
 }
@@ -174,15 +379,18 @@ function highlightZone(zone) {
   if (!state.cy) return;
   state.cy.elements().removeClass("hidden dimmed zone-focus");
   state.cy.elements().addClass("dimmed");
-  const members = zone.members.map(item => state.cy.$id(item.object_id));
+  const members = zone.members.map(objectForZoneMember).filter(Boolean).map(item => state.cy.$id(item.id));
   members.forEach(node => { node.removeClass("dimmed").addClass("zone-focus"); node.connectedEdges().removeClass("dimmed"); });
   state.cy.fit(state.cy.collection(members), 100);
   $("#canvas-title").textContent = `Zone · ${zone.name}`;
 }
 
-async function saveZone(workspace, system, zone, memberIds) {
+function objectForZoneMember(member) {
+  return state.data.objects.find(item => item.graph === member.graph && item.object_id === member.object_id);
+}
+
+async function saveZone(workspace, system, zone, members) {
   if (!state.data.editable) return toast("Restart with --edit to change zones.");
-  const members = memberIds.map(id => state.data.objects.find(item => item.id === id)?.label).filter(Boolean);
   try {
     await api("/api/zone/save", {workspace: workspace.name, workspace_revision: workspace.revision, system: system.name, area: system.areas[0]?.name || "discovered", zone: zone.name, description: zone.description, members});
     toast(`Zone ${zone.name} updated.`); await load();
@@ -190,12 +398,14 @@ async function saveZone(workspace, system, zone, memberIds) {
 }
 
 function renderReview() {
-  const pending = state.data.review.filter(item => ["draft", "review_required", "deferred"].includes(item.state));
-  const reviewed = state.data.review.filter(item => ["validated", "rejected"].includes(item.state)).length;
-  const annotated = state.data.review.filter(item => item.state !== "missing").length;
-  $("#review-progress").textContent = `${reviewed} of ${annotated} annotated tables decided · ${state.data.review.length - annotated} missing`;
+  const visibleIds = new Set(visibleObjects().map(item => item.id));
+  const scopedReview = state.data.review.filter(item => visibleIds.has(item.id));
+  const pending = scopedReview.filter(item => ["draft", "review_required", "deferred"].includes(item.state));
+  const reviewed = scopedReview.filter(item => ["validated", "rejected"].includes(item.state)).length;
+  const annotated = scopedReview.filter(item => item.state !== "missing").length;
+  $("#review-progress").textContent = `${reviewed} of ${annotated} annotated tables decided · ${scopedReview.length - annotated} missing`;
   $("#review-progress-bar").style.width = `${annotated ? Math.round(reviewed / annotated * 100) : 0}%`;
-  const records = state.reviewFilter === "pending" ? pending : state.data.review;
+  const records = state.reviewFilter === "pending" ? pending : scopedReview;
   if (!records.some(item => item.id === state.reviewId)) state.reviewId = records[0]?.id || null;
   $("#review-list").innerHTML = records.map(item => `
     <button class="review-item${item.id === state.reviewId ? " is-active" : ""}" data-review="${escapeAttr(item.id)}"><i class="state-dot ${escapeAttr(item.state)}"></i><span><strong>${escapeHtml(item.label)}</strong><small>${escapeHtml(item.annotation?.description || "No semantic description")}</small></span><span class="state-badge">${stateLabel(item.state)}</span></button>`).join("") || '<div class="empty-state"><p>No proposals in this filter.</p></div>';
@@ -239,11 +449,11 @@ async function reviewAction(action) {
   const reason = values.get("reason");
   try {
     if (action === "save" || changed(record, patch)) {
-      const result = await api("/api/annotation/edit", {reference: record.label, patch, reason, revision: state.data.revision});
-      state.data.revision = result.revision;
+      const result = await api("/api/annotation/edit", {graph: record.graph, reference: record.label, patch, reason, revision: state.data.revisions[record.graph]});
+      state.data.revisions[record.graph] = result.revision;
     }
     if (action === "approve" || action === "reject") {
-      await api("/api/annotation/decision", {reference: record.label, state: action === "approve" ? "validated" : "rejected", reason, include_fields: values.get("include_fields") === "on", revision: state.data.revision});
+      await api("/api/annotation/decision", {graph: record.graph, reference: record.label, state: action === "approve" ? "validated" : "rejected", reason, include_fields: values.get("include_fields") === "on", revision: state.data.revisions[record.graph]});
     }
     toast(action === "approve" ? "Annotation approved." : action === "reject" ? "Annotation rejected." : "Edits saved as a draft.");
     const previous = record.id; await load(); if (action !== "save") advanceReview(previous);
@@ -362,11 +572,23 @@ async function trace(reference) {
   $("#lineage-drawer").hidden = false; $("#lineage-reference").value = reference; $("#lineage-status").className = "notice"; $("#lineage-status").textContent = "Resolving selected lineage documents…";
   try {
     const result = await api("/api/lineage/upstream", {reference, lineages: state.data.lineages, max_hops: 12, states: ["draft", "review_required", "validated"]});
+    state.trace = result;
+    state.traceOnCanvas = false;
+    $("#show-trace-canvas").hidden = false;
     $("#lineage-title").textContent = result.start.reference;
     $("#lineage-status").textContent = `${result.hops.length} hops · ${result.origins.length} origins${result.truncated ? " · truncated" : ""}${result.warnings.length ? ` · ${result.warnings.join(" ")}` : ""}`;
     $("#lineage-origins").innerHTML = result.origins.map(item => `<span class="origin">Origin · ${escapeHtml(item.reference)}</span>`).join("");
     $("#lineage-hops").innerHTML = result.hops.map(hop => `<article class="hop"><span class="hop-depth">${hop.depth}</span><span><strong>${escapeHtml(hop.source.reference)}</strong><small>${escapeHtml(hop.source.kind)}</small></span><span class="hop-relation">${escapeHtml(hop.relation)} →</span><span><strong>${escapeHtml(hop.target.reference)}</strong><small>${escapeHtml(hop.state)}${hop.via_definition ? ` · via ${escapeHtml(hop.via_definition)}` : ""}</small></span></article>`).join("") || '<div class="empty-state"><p>No upstream hops found.</p></div>';
-  } catch (error) { $("#lineage-status").className = "notice error"; $("#lineage-status").textContent = error.message; $("#lineage-origins").innerHTML = ""; $("#lineage-hops").innerHTML = ""; }
+  } catch (error) { state.trace = null; state.traceOnCanvas = false; $("#show-trace-canvas").hidden = true; $("#lineage-status").className = "notice error"; $("#lineage-status").textContent = error.message; $("#lineage-origins").innerHTML = ""; $("#lineage-hops").innerHTML = ""; }
+}
+
+function showTraceOnCanvas() {
+  if (!state.trace) return;
+  state.canvasMode = "lineage";
+  state.traceOnCanvas = true;
+  $$('[data-canvas-mode]').forEach(button => button.classList.toggle("is-active", button.dataset.canvasMode === "lineage"));
+  $("#lineage-drawer").hidden = true;
+  renderGraph();
 }
 
 function openZoneDialog() {
@@ -377,7 +599,7 @@ function openZoneDialog() {
 async function createZone(event) {
   event.preventDefault(); const selected = selectedObject(); if (!selected) return toast("Select an object first.");
   const values = Object.fromEntries(new FormData(event.currentTarget));
-  try { await api("/api/zone/save", {...values, members: [selected.label]}); $("#zone-dialog").close(); toast(`Zone ${values.zone} created.`); await load(); } catch (error) { toast(error.message); }
+  try { await api("/api/zone/save", {...values, members: [{graph: selected.graph, object_id: selected.object_id}]}); $("#zone-dialog").close(); toast(`Zone ${values.zone} created.`); await load(); } catch (error) { toast(error.message); }
 }
 
 function switchView(view) {
@@ -407,8 +629,15 @@ $$('[data-kind]').forEach(button => button.addEventListener("click", () => { sta
 $$('.tab').forEach(button => button.addEventListener("click", () => switchView(button.dataset.view)));
 $$('.review-filter').forEach(button => button.addEventListener("click", () => { state.reviewFilter = button.dataset.reviewFilter; $$('.review-filter').forEach(item => item.classList.toggle("is-active", item === button)); renderReview(); }));
 $("#fit-graph").addEventListener("click", focusSelected);
-$("#show-all").addEventListener("click", () => { state.cy.elements().removeClass("hidden dimmed zone-focus"); state.cy.fit(undefined, 70); $("#canvas-title").textContent = "Schema topology · all objects"; });
-$("#trace-selected").addEventListener("click", () => trace(selectedObject()?.label || ""));
+$("#show-all").addEventListener("click", () => { state.traceOnCanvas = false; state.cy.elements().removeClass("hidden dimmed zone-focus trace-focus"); state.cy.fit(undefined, 70); $("#canvas-title").textContent = state.canvasMode === "space" ? "Information space · all objects" : "Lineage · all selected documents"; });
+$("#trace-selected").addEventListener("click", () => trace(selectedObject()?.reference || ""));
+$("#show-trace-canvas").addEventListener("click", showTraceOnCanvas);
+$$('[data-canvas-mode]').forEach(button => button.addEventListener("click", () => {
+  state.canvasMode = button.dataset.canvasMode;
+  state.traceOnCanvas = state.canvasMode === "lineage" && state.traceOnCanvas;
+  $$('[data-canvas-mode]').forEach(item => item.classList.toggle("is-active", item === button));
+  renderGraph();
+}));
 $("#close-lineage").addEventListener("click", () => { $("#lineage-drawer").hidden = true; });
 $("#lineage-form").addEventListener("submit", event => { event.preventDefault(); trace($("#lineage-reference").value); });
 $("#add-lineage").addEventListener("click", () => openLineageDialog("job"));

@@ -17,7 +17,7 @@ from tarel.lineage.contracts import (
     LineageWriteUnit,
     validate_lineage_document,
 )
-from tarel.lineage.traversal import trace_upstream
+from tarel.lineage.traversal import find_lineage_references, trace_upstream
 
 _REPORT = "powerbi.AdventureWorks.Report.SalesOverview.TotalSalesCard"
 _MEASURE = "powerbi.AdventureWorks.Model.FactSales.TotalSales"
@@ -27,6 +27,32 @@ _PHYSICAL_TABLE = "DemoDW.mart.FactSales"
 
 
 class LineageTraversalTests(TestCase):
+    def test_lineage_find_handles_natural_queries_with_lexical_bm25_and_vectors(self) -> None:
+        report, etl, graph = _lineage_fixture()
+
+        lexical = find_lineage_references(
+            (report, etl),
+            (graph,),
+            "total sales report card",
+        )
+        bm25 = find_lineage_references(
+            (report, etl),
+            (graph,),
+            "total sales report card",
+            mode="bm25",
+        )
+        vector = find_lineage_references(
+            (report, etl),
+            (graph,),
+            "report visual",
+            mode="vector",
+            embedder=_CardEmbedding(),
+        )
+
+        self.assertEqual(lexical[0].reference, _REPORT)
+        self.assertEqual(bm25[0].reference, _REPORT)
+        self.assertEqual(vector[0].reference, _REPORT)
+
     def test_report_field_traces_deterministically_to_physical_origins(self) -> None:
         report, etl, graph = _lineage_fixture()
 
@@ -306,6 +332,25 @@ def _lineage_fixture() -> tuple[LineageDocument, LineageDocument, GraphDocument]
         ),
     )
     return report, etl, graph
+
+
+class _CardEmbedding:
+    @property
+    def model_id(self) -> str:
+        return "card-fixture"
+
+    def embed_documents(
+        self,
+        texts: tuple[str, ...],
+        *,
+        batch_size: int,
+    ) -> tuple[tuple[float, ...], ...]:
+        del batch_size
+        return tuple((1.0, 0.0) if "card" in text.casefold() else (0.0, 1.0) for text in texts)
+
+    def embed_query(self, text: str) -> tuple[float, ...]:
+        del text
+        return (1.0, 0.0)
 
 
 def _document(

@@ -15,6 +15,7 @@ from tarel.annotations.contracts import AnnotationFailure, AnnotationTask
 from tarel.annotations.review import AnnotationReviewRecord
 from tarel.application import (
     add_relationship_use_case,
+    add_workspace_relationship_use_case,
     apply_annotation_use_case,
     build_graph_use_case,
     build_retrieval_index_use_case,
@@ -22,12 +23,14 @@ from tarel.application import (
     check_provider_use_case,
     check_relationship_use_case,
     compile_context_use_case,
+    compile_workspace_context_use_case,
     configure_provider_use_case,
     context_packet_impact_use_case,
     create_demo_use_case,
     create_workspace_use_case,
     decide_annotation_use_case,
     decide_relationship_use_case,
+    decide_workspace_relationship_use_case,
     define_workspace_area_use_case,
     define_workspace_system_use_case,
     define_workspace_zone_use_case,
@@ -46,11 +49,13 @@ from tarel.application import (
     plan_annotations_use_case,
     probe_connector_use_case,
     refresh_graph_use_case,
+    resolve_workspace_scope_use_case,
     retrieval_index_status_use_case,
     run_annotation_batch_use_case,
     sample_connector_use_case,
     scaffold_connector_use_case,
     search_graph_use_case,
+    search_workspace_use_case,
     show_annotation_use_case,
     show_workspace_zone_use_case,
     test_provider_use_case,
@@ -75,6 +80,7 @@ from tarel.retrieval.local import DEFAULT_MODEL_NAME
 from tarel.search import SearchFailure, SearchResults
 from tarel.workspaces.contracts import WorkspaceDocument, WorkspaceFailure
 from tarel.workspaces.core import ResolvedZone
+from tarel.workspaces.scope import ResolvedScope
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -129,6 +135,14 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_show = workspace_commands.add_parser("show", help="Show one workspace hierarchy.")
     workspace_show.add_argument("name")
     _add_format_argument(workspace_show)
+
+    workspace_scope = workspace_commands.add_parser(
+        "scope",
+        help="Resolve systems, areas, schemas, graphs, and zones to graph objects.",
+    )
+    workspace_scope.add_argument("name", help="Workspace name.")
+    _add_scope_arguments(workspace_scope)
+    _add_format_argument(workspace_scope)
 
     workspace_system = workspace_commands.add_parser(
         "system",
@@ -197,6 +211,55 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_zone_show.add_argument("system_name")
     workspace_zone_show.add_argument("zone_name")
     _add_format_argument(workspace_zone_show)
+
+    workspace_relationship = workspace_commands.add_parser(
+        "relationship",
+        help="Manage explicit joins whose endpoints may belong to different graphs.",
+    )
+    workspace_relationship_commands = workspace_relationship.add_subparsers(
+        dest="workspace_relationship_command"
+    )
+    workspace_relationship_add = workspace_relationship_commands.add_parser(
+        "add",
+        help="Add a human-authored cross-graph relationship candidate.",
+    )
+    workspace_relationship_add.add_argument("workspace_name")
+    workspace_relationship_add.add_argument(
+        "--from",
+        required=True,
+        dest="source_reference",
+        help="Source field as GRAPH:NAMESPACE.OBJECT.FIELD.",
+    )
+    workspace_relationship_add.add_argument(
+        "--to",
+        required=True,
+        dest="target_reference",
+        help="Target field as GRAPH:NAMESPACE.OBJECT.FIELD.",
+    )
+    workspace_relationship_add.add_argument("--reason", required=True)
+    workspace_relationship_add.add_argument(
+        "--validated",
+        action="store_true",
+        help="Persist as human-validated instead of draft.",
+    )
+    _add_format_argument(workspace_relationship_add)
+
+    workspace_relationship_list = workspace_relationship_commands.add_parser(
+        "list",
+        help="List persisted workspace relationships.",
+    )
+    workspace_relationship_list.add_argument("workspace_name")
+    _add_format_argument(workspace_relationship_list)
+
+    for decision in ("validate", "reject"):
+        workspace_relationship_decide = workspace_relationship_commands.add_parser(
+            decision,
+            help=f"{decision.title()} a workspace relationship.",
+        )
+        workspace_relationship_decide.add_argument("workspace_name")
+        workspace_relationship_decide.add_argument("relationship_id")
+        workspace_relationship_decide.add_argument("--reason", required=True)
+        _add_format_argument(workspace_relationship_decide)
 
     connector = subcommands.add_parser("connector", help="Inspect and run source connectors.")
     connector_commands = connector.add_subparsers(dest="connector_command")
@@ -353,7 +416,9 @@ def build_parser() -> argparse.ArgumentParser:
         "ui",
         help="Open the optional local graph, lineage, and annotation browser.",
     )
-    ui.add_argument("graph", help="Local graph to inspect.")
+    ui.add_argument("graph", nargs="?", help="Single local graph to inspect.")
+    ui.add_argument("--workspace", help="Open a workspace across one or more graphs.")
+    _add_scope_arguments(ui)
     ui.add_argument(
         "--lineage",
         action="append",
@@ -374,7 +439,7 @@ def build_parser() -> argparse.ArgumentParser:
         "search",
         help="Search graph metadata with lexical, BM25, vector, or hybrid retrieval.",
     )
-    search.add_argument("name", help="Local graph name.")
+    search.add_argument("name", help="Graph name, or workspace name with --workspace.")
     search.add_argument("query", help="Words describing the required analytical objects.")
     search.add_argument("--namespace", "--schema", dest="namespace")
     search.add_argument("--limit", type=int, default=20)
@@ -385,6 +450,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument("--model", type=Path, dest="model_path")
     search.add_argument("--threads", type=int, dest="n_threads")
+    _add_workspace_retrieval_scope_arguments(search)
     _add_annotation_state_arguments(search)
     _add_format_argument(search)
 
@@ -397,7 +463,10 @@ def build_parser() -> argparse.ArgumentParser:
         "build",
         help="Compile bounded context from search and reviewed graph relationships.",
     )
-    context_build.add_argument("name", help="Local graph name.")
+    context_build.add_argument(
+        "name",
+        help="Graph name, or workspace name with --workspace.",
+    )
     context_build.add_argument("query", help="Analytical question or compact search query.")
     context_build.add_argument("--namespace", "--schema", dest="namespace")
     context_build.add_argument("--seed-limit", type=int, default=3)
@@ -418,6 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_build.add_argument("--model", type=Path, dest="model_path")
     context_build.add_argument("--threads", type=int, dest="n_threads")
+    _add_workspace_retrieval_scope_arguments(context_build)
     _add_annotation_state_arguments(context_build)
     _add_format_argument(context_build)
 
@@ -636,6 +706,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 return run_ui(
                     args.graph,
+                    workspace=args.workspace,
+                    systems=tuple(args.systems or ()),
+                    graphs=tuple(args.graphs or ()),
+                    areas=tuple(args.areas or ()),
+                    schemas=tuple(args.schemas or ()),
+                    zones=tuple(args.zones or ()),
                     lineages=tuple(args.lineages or ()),
                     editable=args.edit,
                     port=args.port,
@@ -681,6 +757,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "workspace" and args.workspace_command == "show":
             result = load_workspace_use_case(args.name)
             _render_workspace(result, output_format=args.format)
+            return 0
+
+        if args.command == "workspace" and args.workspace_command == "scope":
+            result = resolve_workspace_scope_use_case(
+                args.name,
+                systems=tuple(args.systems or ()),
+                graphs=tuple(args.graphs or ()),
+                areas=tuple(args.areas or ()),
+                schemas=tuple(args.schemas or ()),
+                zones=tuple(args.zones or ()),
+            )
+            _render_resolved_scope(result, output_format=args.format)
             return 0
 
         if (
@@ -738,6 +826,60 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.zone_name,
             )
             _render_resolved_zone(result, output_format=args.format)
+            return 0
+
+        if (
+            args.command == "workspace"
+            and args.workspace_command == "relationship"
+            and args.workspace_relationship_command == "add"
+        ):
+            result = add_workspace_relationship_use_case(
+                args.workspace_name,
+                source_reference=args.source_reference,
+                target_reference=args.target_reference,
+                reason=args.reason,
+                validated=args.validated,
+            )
+            _render_workspace_relationships(
+                result.workspace.name,
+                (result.relationship.to_dict(),),
+                output_format=args.format,
+            )
+            return 0
+
+        if (
+            args.command == "workspace"
+            and args.workspace_command == "relationship"
+            and args.workspace_relationship_command == "list"
+        ):
+            workspace = load_workspace_use_case(args.workspace_name)
+            _render_workspace_relationships(
+                workspace.name,
+                tuple(item.to_dict() for item in workspace.relationships),
+                output_format=args.format,
+            )
+            return 0
+
+        if (
+            args.command == "workspace"
+            and args.workspace_command == "relationship"
+            and args.workspace_relationship_command in {"validate", "reject"}
+        ):
+            result = decide_workspace_relationship_use_case(
+                args.workspace_name,
+                args.relationship_id,
+                state=(
+                    "validated"
+                    if args.workspace_relationship_command == "validate"
+                    else "rejected"
+                ),
+                reason=args.reason,
+            )
+            _render_workspace_relationships(
+                result.workspace.name,
+                (result.relationship.to_dict(),),
+                output_format=args.format,
+            )
             return 0
 
         if args.command == "connector" and args.connector_command == "check":
@@ -958,41 +1100,83 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "search":
-            results = search_graph_use_case(
-                args.name,
-                args.query,
-                limit=args.limit,
-                namespace=args.namespace,
-                mode=args.mode,
-                model_path=args.model_path,
-                n_threads=args.n_threads,
-                annotation_states=(
+            search_arguments = {
+                "limit": args.limit,
+                "mode": args.mode,
+                "model_path": args.model_path,
+                "n_threads": args.n_threads,
+                "annotation_states": (
                     frozenset(args.annotation_states) if args.annotation_states else None
                 ),
-                validated_only=args.validated_only,
-            )
+                "validated_only": args.validated_only,
+            }
+            if args.workspace:
+                if args.namespace is not None:
+                    raise WorkspaceFailure(
+                        "invalid_workspace_scope",
+                        "Use --scope-schema GRAPH:NAMESPACE instead of --namespace "
+                        "for a workspace.",
+                    )
+                results = search_workspace_use_case(
+                    args.name,
+                    args.query,
+                    systems=tuple(args.systems or ()),
+                    graphs=tuple(args.graphs or ()),
+                    areas=tuple(args.areas or ()),
+                    schemas=tuple(args.schemas or ()),
+                    zones=tuple(args.zones or ()),
+                    **search_arguments,
+                )
+            else:
+                results = search_graph_use_case(
+                    args.name,
+                    args.query,
+                    namespace=args.namespace,
+                    **search_arguments,
+                )
             _render_search_results(results, output_format=args.format)
             return 0
 
         if args.command == "context" and args.context_command == "build":
-            result = compile_context_use_case(
-                args.name,
-                args.query,
-                namespace=args.namespace,
-                seed_limit=args.seed_limit,
-                max_objects=args.max_objects,
-                max_joins=args.max_joins,
-                max_hops=args.max_hops,
-                max_fields_per_object=args.max_fields_per_object,
-                max_characters=args.max_characters,
-                mode=args.mode,
-                model_path=args.model_path,
-                n_threads=args.n_threads,
-                annotation_states=(
+            context_arguments = {
+                "seed_limit": args.seed_limit,
+                "max_objects": args.max_objects,
+                "max_joins": args.max_joins,
+                "max_hops": args.max_hops,
+                "max_fields_per_object": args.max_fields_per_object,
+                "max_characters": args.max_characters,
+                "mode": args.mode,
+                "model_path": args.model_path,
+                "n_threads": args.n_threads,
+                "annotation_states": (
                     frozenset(args.annotation_states) if args.annotation_states else None
                 ),
-                validated_only=args.validated_only,
-            )
+                "validated_only": args.validated_only,
+            }
+            if args.workspace:
+                if args.namespace is not None:
+                    raise WorkspaceFailure(
+                        "invalid_workspace_scope",
+                        "Use --scope-schema GRAPH:NAMESPACE instead of --namespace "
+                        "for a workspace.",
+                    )
+                result = compile_workspace_context_use_case(
+                    args.name,
+                    args.query,
+                    systems=tuple(args.systems or ()),
+                    graphs=tuple(args.graphs or ()),
+                    areas=tuple(args.areas or ()),
+                    schemas=tuple(args.schemas or ()),
+                    zones=tuple(args.zones or ()),
+                    **context_arguments,
+                )
+            else:
+                result = compile_context_use_case(
+                    args.name,
+                    args.query,
+                    namespace=args.namespace,
+                    **context_arguments,
+                )
             _render_context(result, output_format=args.format)
             return 0
 
@@ -1244,6 +1428,57 @@ def _add_format_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_scope_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--system",
+        action="append",
+        dest="systems",
+        help="Include a system; repeat to include multiple systems.",
+    )
+    parser.add_argument(
+        "--graph",
+        action="append",
+        dest="graphs",
+        help="Limit the scope to a graph; repeat to include multiple graphs.",
+    )
+    parser.add_argument(
+        "--area",
+        action="append",
+        dest="areas",
+        help="Limit to an area (NAME or SYSTEM:NAME); repeat for a union.",
+    )
+    parser.add_argument(
+        "--schema",
+        action="append",
+        dest="schemas",
+        help="Limit to a schema as GRAPH:NAMESPACE; repeat for a union.",
+    )
+    parser.add_argument(
+        "--zone",
+        action="append",
+        dest="zones",
+        help="Limit to a zone (NAME or SYSTEM:NAME); repeat for a union.",
+    )
+
+
+def _add_workspace_retrieval_scope_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--workspace",
+        action="store_true",
+        help="Treat NAME as a workspace and search only its resolved scope.",
+    )
+    parser.add_argument("--system", action="append", dest="systems")
+    parser.add_argument("--graph", action="append", dest="graphs")
+    parser.add_argument("--area", action="append", dest="areas")
+    parser.add_argument(
+        "--scope-schema",
+        action="append",
+        dest="schemas",
+        help="Workspace schema as GRAPH:NAMESPACE; repeat for a union.",
+    )
+    parser.add_argument("--zone", action="append", dest="zones")
+
+
 def _add_annotation_state_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--annotation-state",
@@ -1284,11 +1519,17 @@ def _render_search_results(results: SearchResults, *, output_format: str) -> Non
         print(json.dumps(results.to_dict(), indent=2, sort_keys=True))
         return
     print(f"Search: {results.query}")
-    print(f"Graph: {results.graph}")
+    if results.workspace:
+        print(f"Workspace: {results.workspace}")
+        print(f"Scope hash: {results.scope_hash}")
+        print(f"Graphs: {', '.join(results.graphs)}")
+    else:
+        print(f"Graph: {results.graph}")
     print(f"Mode: {results.mode}")
     print(f"Terms: {', '.join(results.terms)}")
     for hit in results.hits:
-        print(f"- {hit.label} [{hit.type}] score={hit.score}")
+        graph = f"; graph={hit.source_graph}" if hit.source_graph else ""
+        print(f"- {hit.label} [{hit.type}{graph}] score={hit.score}")
         print(f"  Reasons: {', '.join(hit.reasons)}")
         if hit.fields:
             fields = ", ".join(f"{field.label} ({field.score})" for field in hit.fields)
@@ -1305,6 +1546,10 @@ def _render_context(result: ContextResult, *, output_format: str) -> None:
     print(f"Revision: {result.graph_revision}")
     print(f"Stable hash: {result.stable_hash}")
     print(f"Scope: {result.scope.mode}; namespace={result.scope.namespace or '*'}")
+    if result.scope.workspace:
+        print(f"Workspace: {result.scope.workspace}")
+        print(f"Scope hash: {result.scope.scope_hash}")
+        print(f"Graphs: {', '.join(result.scope.graphs)}")
     print(f"Annotation states: {', '.join(sorted(result.annotation_states))}")
 
     print("\n## Stable objects")
@@ -1543,6 +1788,10 @@ def _render_workspace(workspace: WorkspaceDocument, *, output_format: str) -> No
                 print(f"    Schema: {schema.graph}:{schema.namespace}")
         for zone in sorted(system.zones, key=lambda item: item.name):
             print(f"  Zone: {zone.name} ({len(zone.members)} objects)")
+    if workspace.relationships:
+        print(f"Workspace relationships: {len(workspace.relationships)}")
+        for relationship in sorted(workspace.relationships, key=lambda item: item.id):
+            print(f"  {relationship.id} [{relationship.state}]")
 
 
 def _render_resolved_zone(zone: ResolvedZone, *, output_format: str) -> None:
@@ -1557,6 +1806,47 @@ def _render_resolved_zone(zone: ResolvedZone, *, output_format: str) -> None:
     print(f"Objects: {len(zone.objects)}")
     for item in zone.objects:
         print(f"  {item.graph}:{item.label} [{item.type}; area={item.area}]")
+
+
+def _render_resolved_scope(scope: ResolvedScope, *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(scope.to_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    print(f"Workspace: {scope.workspace}")
+    print(f"Scope hash: {scope.scope_hash}")
+    print(f"Graphs: {', '.join(scope.graph_names)}")
+    print(f"Objects: {len(scope.objects)}")
+    for item in scope.objects:
+        context = f"system={item.system}; area={item.area or '-'}"
+        zones = f"; zones={','.join(item.zones)}" if item.zones else ""
+        print(f"  {item.graph}:{item.label} [{item.type}; {context}{zones}]")
+
+
+def _render_workspace_relationships(
+    workspace_name: str,
+    relationships: tuple[dict[str, object], ...],
+    *,
+    output_format: str,
+) -> None:
+    payload = {"relationships": list(relationships), "workspace": workspace_name}
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    print(f"Workspace: {workspace_name}")
+    print(f"Relationships: {len(relationships)}")
+    for relationship in relationships:
+        source = relationship["source"]
+        target = relationship["target"]
+        if not isinstance(source, dict) or not isinstance(target, dict):
+            continue
+        print(
+            f"- {relationship['id']} [{relationship['state']}] "
+            f"{source['graph']}:{source['object_id']}."
+            f"{','.join(source['fields'])} -> "
+            f"{target['graph']}:{target['object_id']}."
+            f"{','.join(target['fields'])}"
+        )
+        print(f"  Reason: {relationship['reason']}")
 
 
 def _render_graph_summary(

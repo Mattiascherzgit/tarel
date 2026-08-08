@@ -1,6 +1,6 @@
 import json
 import threading
-from contextlib import ExitStack, redirect_stderr
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -82,6 +82,13 @@ class UIPresentationTests(TestCase):
         self.assertEqual(manual["jobs"][0]["description"], "Loads sales into the mart.")
         self.assertEqual(manual["hops"][0]["item_id"], hop.id)
         self.assertEqual(manual["hops"][0]["state"], "draft")
+        flows = payload["lineage_flows"]
+        self.assertEqual(len(flows["edges"]), 2)
+        self.assertEqual(
+            {item["relation"] for item in flows["edges"]},
+            {"business_data", "insert"},
+        )
+        self.assertTrue(any(item["kind"] == "procedure" for item in flows["nodes"]))
 
 
 class UIBackendTests(TestCase):
@@ -199,6 +206,7 @@ class UIBackendTests(TestCase):
             with urlopen(f"{base}/", timeout=3) as response:
                 html = response.read().decode("utf-8")
                 self.assertIn('content="test-token"', html)
+                self.assertIn("Show path on canvas", html)
                 self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
             with urlopen(f"{base}/api/bootstrap", timeout=3) as response:
                 payload = json.load(response)
@@ -216,6 +224,77 @@ class UIBackendTests(TestCase):
             server.shutdown()
             server.server_close()
             thread.join(timeout=3)
+
+    def test_workspace_bootstrap_qualifies_ids_across_multiple_graphs(self) -> None:
+        self.graph_store.save(replace(_graph(), name="sales-copy"))
+        errors = StringIO()
+        output = StringIO()
+        with redirect_stderr(errors), redirect_stdout(output):
+            self.assertEqual(main(["workspace", "create", "enterprise"]), 0)
+            self.assertEqual(
+                main(
+                    [
+                        "workspace",
+                        "system",
+                        "define",
+                        "enterprise",
+                        "analytics",
+                        "--graph",
+                        "sales",
+                        "--graph",
+                        "sales-copy",
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "workspace",
+                        "relationship",
+                        "add",
+                        "enterprise",
+                        "--from",
+                        "sales:mart.FactSales.DateKey",
+                        "--to",
+                        "sales-copy:mart.DimDate.DateKey",
+                        "--reason",
+                        "Shared date dimension across graph snapshots.",
+                        "--validated",
+                    ]
+                ),
+                0,
+            )
+            self.assertEqual(
+                main(
+                    [
+                        "workspace",
+                        "area",
+                        "define",
+                        "enterprise",
+                        "analytics",
+                        "warehouse",
+                        "--schema",
+                        "sales:mart",
+                        "--schema",
+                        "sales-copy:mart",
+                    ]
+                ),
+                0,
+            )
+        self.assertEqual(errors.getvalue(), "")
+
+        payload = TarelUIBackend(UIConfig(workspace="enterprise")).bootstrap()
+
+        self.assertEqual([item["name"] for item in payload["graphs"]], ["sales", "sales-copy"])
+        self.assertEqual(len(payload["objects"]), 4)
+        self.assertEqual(len({item["id"] for item in payload["objects"]}), 4)
+        self.assertTrue(all("::object:" in item["id"] for item in payload["objects"]))
+        self.assertEqual(payload["scope"]["workspace"], "enterprise")
+        self.assertEqual(len(payload["revision"]), 64)
+        cross_graph = [item for item in payload["edges"] if item["graph"] is None]
+        self.assertEqual(len(cross_graph), 1)
+        self.assertEqual(cross_graph[0]["metadata"]["state"], "validated")
 
     def test_create_manual_job_hop_and_review_it_from_the_ui(self) -> None:
         job_result = self.backend.mutate(

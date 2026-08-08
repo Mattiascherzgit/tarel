@@ -150,6 +150,211 @@ class WorkspaceTests(TestCase):
                 2,
             )
 
+            with (
+                patch("tarel.application.FileGraphStore", return_value=graph_store),
+                patch("tarel.application.FileWorkspaceStore", return_value=workspace_store),
+            ):
+                scoped = json.loads(
+                    self._run(
+                        "workspace",
+                        "scope",
+                        "enterprise",
+                        "--system",
+                        "commercial",
+                        "--zone",
+                        "revenue",
+                        "--format",
+                        "json",
+                    )
+                )
+            self.assertEqual(scoped["graphs"], ["erp", "warehouse"])
+            self.assertEqual(
+                [(item["graph"], item["label"]) for item in scoped["objects"]],
+                [("warehouse", "sales.FactSales"), ("erp", "public.Orders")],
+            )
+            self.assertEqual(len(scoped["scope_hash"]), 64)
+
+    def test_workspace_search_context_and_validated_cross_graph_join_share_scope(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            graph_store = FileGraphStore(root / "graphs")
+            workspace_store = FileWorkspaceStore(root / "workspaces")
+            graph_store.save(_graph("warehouse", "sales", "FactSales"))
+            graph_store.save(_graph("erp", "public", "Orders"))
+
+            with (
+                patch("tarel.application.FileGraphStore", return_value=graph_store),
+                patch("tarel.application.FileWorkspaceStore", return_value=workspace_store),
+            ):
+                self._run("workspace", "create", "enterprise")
+                self._run(
+                    "workspace",
+                    "system",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "--graph",
+                    "warehouse",
+                    "--graph",
+                    "erp",
+                )
+                self._run(
+                    "workspace",
+                    "area",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "analytics",
+                    "--schema",
+                    "warehouse:sales",
+                )
+                self._run(
+                    "workspace",
+                    "area",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "operations",
+                    "--schema",
+                    "erp:public",
+                )
+                self._run(
+                    "workspace",
+                    "zone",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "revenue",
+                    "--object",
+                    "warehouse:sales.FactSales",
+                    "--object",
+                    "erp:public.Orders",
+                )
+                relationship = json.loads(
+                    self._run(
+                        "workspace",
+                        "relationship",
+                        "add",
+                        "enterprise",
+                        "--from",
+                        "warehouse:sales.FactSales.Id",
+                        "--to",
+                        "erp:public.Orders.Id",
+                        "--reason",
+                        "The warehouse fact is loaded from ERP orders.",
+                        "--validated",
+                        "--format",
+                        "json",
+                    )
+                )["relationships"][0]
+                search = json.loads(
+                    self._run(
+                        "search",
+                        "enterprise",
+                        "fact sales orders",
+                        "--workspace",
+                        "--zone",
+                        "revenue",
+                        "--format",
+                        "json",
+                    )
+                )
+                context = json.loads(
+                    self._run(
+                        "context",
+                        "build",
+                        "enterprise",
+                        "fact sales orders",
+                        "--workspace",
+                        "--zone",
+                        "revenue",
+                        "--seed-limit",
+                        "1",
+                        "--max-objects",
+                        "2",
+                        "--max-hops",
+                        "1",
+                        "--format",
+                        "json",
+                    )
+                )
+
+            self.assertEqual(relationship["state"], "validated")
+            self.assertEqual(search["workspace"], "enterprise")
+            self.assertEqual(
+                {item["source_graph"] for item in search["hits"]},
+                {"erp", "warehouse"},
+            )
+            self.assertEqual(context["stable"]["scope"]["workspace"], "enterprise")
+            self.assertEqual(
+                {item["label"] for item in context["stable"]["objects"]},
+                {"erp:public.Orders", "warehouse:sales.FactSales"},
+            )
+            self.assertEqual(
+                context["stable"]["joins"][0]["origin"],
+                "human",
+            )
+
+    def test_workspace_search_ranks_inside_scope_before_applying_limit(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            graph_store = FileGraphStore(root / "graphs")
+            workspace_store = FileWorkspaceStore(root / "workspaces")
+            outside = tuple(f"A{index:03d}Sales" for index in range(101))
+            graph_store.save(_graph("warehouse", "sales", *outside, "ZZZScopedSales"))
+
+            with (
+                patch("tarel.application.FileGraphStore", return_value=graph_store),
+                patch("tarel.application.FileWorkspaceStore", return_value=workspace_store),
+            ):
+                self._run("workspace", "create", "enterprise")
+                self._run(
+                    "workspace",
+                    "system",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "--graph",
+                    "warehouse",
+                )
+                self._run(
+                    "workspace",
+                    "area",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "analytics",
+                    "--schema",
+                    "warehouse:sales",
+                )
+                self._run(
+                    "workspace",
+                    "zone",
+                    "define",
+                    "enterprise",
+                    "commercial",
+                    "focused",
+                    "--object",
+                    "warehouse:sales.ZZZScopedSales",
+                )
+                search = json.loads(
+                    self._run(
+                        "search",
+                        "enterprise",
+                        "sales",
+                        "--workspace",
+                        "--zone",
+                        "focused",
+                        "--format",
+                        "json",
+                    )
+                )
+
+            self.assertEqual(
+                [item["label"] for item in search["hits"]],
+                ["warehouse:sales.ZZZScopedSales"],
+            )
+
     def _run(self, *args: str) -> str:
         output = StringIO()
         errors = StringIO()

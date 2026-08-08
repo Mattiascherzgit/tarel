@@ -16,9 +16,12 @@ from tarel.lineage.contracts import (
     LineageReview,
     LineageWriteSource,
 )
+from tarel.retrieval.bm25 import rank_bm25, tokenize
+from tarel.retrieval.contracts import EmbeddingBackend, RankedDocument, RetrievalDocument
 
 DEFAULT_LINEAGE_STATES = frozenset({"draft", "review_required", "validated"})
 _LINEAGE_STATES = frozenset({"draft", "rejected", "review_required", "validated"})
+_MAX_VECTOR_DOCUMENTS = 32
 
 
 @dataclass(frozen=True, slots=True)
@@ -146,12 +149,62 @@ def find_lineage_references(
     query: str,
     *,
     limit: int = 20,
+    mode: str = "lexical",
+    embedder: EmbeddingBackend | None = None,
 ) -> tuple[LineageReference, ...]:
     if not query.strip() or limit < 1:
         raise LineageFailure("invalid_lineage_search", "Lineage search requires a query and limit.")
+    if mode not in {"lexical", "bm25", "vector", "hybrid"}:
+        raise LineageFailure(
+            "invalid_lineage_search",
+            f"Unsupported lineage search mode: {mode}",
+        )
+    if mode in {"vector", "hybrid"} and embedder is None:
+        raise LineageFailure(
+            "missing_embedding_backend",
+            "Vector lineage search requires a local embedding backend.",
+        )
     network = _build_network(documents, graphs, DEFAULT_LINEAGE_STATES)
+    if mode == "lexical":
+        return _lexical_lineage_references(network, query, limit=limit)
+
+    retrieval_documents = _lineage_retrieval_documents(network)
+    bm25 = (
+        rank_bm25(retrieval_documents, query, limit=len(retrieval_documents))
+        if mode in {"bm25", "vector", "hybrid"}
+        else ()
+    )
+    vector = (
+        _rank_lineage_vectors(
+            _lineage_vector_candidates(network, retrieval_documents, bm25, query),
+            query,
+            embedder,
+        )
+        if mode in {"vector", "hybrid"}
+        else ()
+    )
+    if mode == "bm25":
+        ordered_ids = tuple(item.document.id for item in bm25)
+    elif mode == "vector":
+        ordered_ids = tuple(item[0] for item in vector)
+    else:
+        ordered_ids = _fuse_lineage_ranks(
+            tuple(item.document.id for item in bm25),
+            tuple(item[0] for item in vector),
+            tuple(item.id for item in _lexical_lineage_references(network, query, limit=limit)),
+        )
+    return tuple(network.nodes[node_id].value for node_id in ordered_ids[:limit])
+
+
+def _lexical_lineage_references(
+    network: _Network,
+    query: str,
+    *,
+    limit: int,
+) -> tuple[LineageReference, ...]:
     needle = _normalize(query)
-    ranked: list[tuple[int, int, int, str, str, LineageReference]] = []
+    query_terms = set(tokenize(query))
+    ranked: list[tuple[int, float, int, int, str, str, LineageReference]] = []
     for node in network.nodes.values():
         normalized = {_normalize(item) for item in node.aliases}
         name = _normalize(node.value.name)
@@ -164,10 +217,29 @@ def find_lineage_references(
         elif any(needle in item for item in normalized):
             rank = 3
         else:
+            rank = 4
+        candidate_terms = set(
+            tokenize(
+                " ".join(
+                    (
+                        node.value.reference,
+                        node.value.name,
+                        node.value.kind,
+                        node.value.description or "",
+                        *node.aliases,
+                    )
+                )
+            )
+        )
+        matched = len(query_terms & candidate_terms)
+        if rank == 4 and matched == 0:
             continue
+        coverage = matched / max(len(query_terms), 1)
         ranked.append(
             (
                 rank,
+                -coverage,
+                -matched,
                 0 if node.value.source.startswith("lineage:") else 1,
                 len(name),
                 node.value.reference.casefold(),
@@ -175,7 +247,103 @@ def find_lineage_references(
                 node.value,
             )
         )
-    return tuple(item[5] for item in sorted(ranked)[:limit])
+    return tuple(item[7] for item in sorted(ranked)[:limit])
+
+
+def _lineage_retrieval_documents(network: _Network) -> tuple[RetrievalDocument, ...]:
+    return tuple(
+        RetrievalDocument(
+            id=node.value.id,
+            object_id=node.value.id,
+            field_id=None,
+            namespace=node.value.source,
+            label=node.value.reference,
+            text="\n".join(
+                (
+                    f"Name: {node.value.name}",
+                    f"Kind: {node.value.kind}",
+                    f"Reference: {node.value.reference}",
+                    f"Aliases: {', '.join(node.aliases)}",
+                    f"Description: {node.value.description or ''}",
+                )
+            ),
+        )
+        for node in sorted(network.nodes.values(), key=lambda item: item.value.id)
+    )
+
+
+def _rank_lineage_vectors(
+    documents: tuple[RetrievalDocument, ...],
+    query: str,
+    embedder: EmbeddingBackend | None,
+) -> tuple[tuple[str, float], ...]:
+    assert embedder is not None
+    vectors = embedder.embed_documents(
+        tuple(f"{item.label}\n{item.text}" for item in documents),
+        batch_size=16,
+    )
+    query_vector = embedder.embed_query(query)
+    ranked = []
+    for document, vector in zip(documents, vectors, strict=True):
+        if len(vector) != len(query_vector):
+            raise LineageFailure(
+                "model_index_mismatch",
+                "Lineage query and document embedding dimensions differ.",
+            )
+        ranked.append(
+            (
+                document.id,
+                sum(left * right for left, right in zip(vector, query_vector, strict=True)),
+            )
+        )
+    return tuple(sorted(ranked, key=lambda item: (-item[1], item[0])))
+
+
+def _lineage_vector_candidates(
+    network: _Network,
+    documents: tuple[RetrievalDocument, ...],
+    bm25: tuple[RankedDocument, ...],
+    query: str,
+) -> tuple[RetrievalDocument, ...]:
+    by_id = {item.id: item for item in documents}
+    ordered_ids: list[str] = []
+
+    lineage_ids = sorted(
+        node.value.id
+        for node in network.nodes.values()
+        if node.value.source.startswith("lineage:")
+    )
+    if len(lineage_ids) <= _MAX_VECTOR_DOCUMENTS:
+        ordered_ids.extend(lineage_ids)
+
+    lexical = _lexical_lineage_references(
+        network,
+        query,
+        limit=_MAX_VECTOR_DOCUMENTS,
+    )
+    ordered_ids.extend(item.id for item in lexical)
+    ordered_ids.extend(item.document.id for item in bm25)
+    if not ordered_ids:
+        ordered_ids.extend(lineage_ids)
+
+    unique = []
+    seen: set[str] = set()
+    for node_id in ordered_ids:
+        if node_id in seen or node_id not in by_id:
+            continue
+        seen.add(node_id)
+        unique.append(by_id[node_id])
+        if len(unique) >= _MAX_VECTOR_DOCUMENTS:
+            break
+    return tuple(unique)
+
+
+def _fuse_lineage_ranks(*rankings: tuple[str, ...]) -> tuple[str, ...]:
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, node_id in enumerate(ranking, start=1):
+            scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (60 + rank)
+    return tuple(sorted(scores, key=lambda node_id: (-scores[node_id], node_id)))
 
 
 def trace_upstream(

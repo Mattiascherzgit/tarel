@@ -109,6 +109,13 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
     find.add_argument("--lineage", action="append", dest="lineages", required=True)
     find.add_argument("--graph", action="append", dest="graphs")
     find.add_argument("--limit", type=int, default=20)
+    find.add_argument(
+        "--mode",
+        choices=("lexical", "bm25", "vector", "hybrid"),
+        default="lexical",
+    )
+    find.add_argument("--model", type=Path, dest="model_path")
+    find.add_argument("--threads", type=int, dest="n_threads")
     _format(find)
 
     upstream = commands.add_parser(
@@ -259,8 +266,15 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
             lineage_names=tuple(args.lineages),
             graph_names=tuple(args.graphs or ()),
             limit=args.limit,
+            mode=args.mode,
+            model_path=args.model_path,
+            n_threads=args.n_threads,
         )
-        payload = {"query": args.query, "references": [item.to_dict() for item in references]}
+        payload = {
+            "mode": args.mode,
+            "query": args.query,
+            "references": [item.to_dict() for item in references],
+        }
         _render_lineage_find(payload, output_format=args.format)
         return 0
     if command == "upstream":
@@ -480,6 +494,7 @@ def _render_lineage_find(payload: dict[str, object], *, output_format: str) -> N
     references = payload.get("references")
     if not isinstance(references, list):
         return
+    print(f"Mode: {payload.get('mode', 'lexical')}")
     for item in references:
         if isinstance(item, dict):
             print(f"- {item['reference']} [{item['kind']}; {item['source']}]")

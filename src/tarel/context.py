@@ -87,6 +87,7 @@ def compile_context_from_search(
     max_fields_per_object: int = 12,
     max_characters: int = DEFAULT_MAX_CONTEXT_CHARACTERS,
     annotation_states: frozenset[str] = DEFAULT_CONTEXT_ANNOTATION_STATES,
+    scope: ContextScope | None = None,
 ) -> ContextResult:
     """Expand caller-supplied retrieval anchors through reviewed graph relationships."""
     _validate_budgets(
@@ -192,7 +193,7 @@ def compile_context_from_search(
     result = ContextResult(
         graph=graph.name,
         graph_revision=graph_revision(graph),
-        scope=ContextScope(namespace=namespace),
+        scope=scope or ContextScope(namespace=namespace),
         query=search.query,
         terms=search.terms,
         objects=objects,

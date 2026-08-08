@@ -40,6 +40,28 @@ task.
 
 TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**.
 
+### One question across several systems
+
+TAREL does not require independent source graphs to be flattened into one catalog. A workspace
+groups them into systems, areas, schemas, and overlapping zones, while reviewed workspace
+relationships connect fields that belong together across graph boundaries. The same selectors are
+used by discovery and context compilation:
+
+```bash
+tarel search enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+tarel context build enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+```
+
+Both commands resolve the scope before ranking and emit the same deterministic scope hash. The
+context can expand across validated workspace relationships, but never across draft or rejected
+claims. Source graphs remain independent and unchanged.
+
+Operational lineage is kept explicit as a second path: use tolerant `lineage find` to locate a
+report, measure, job, procedure, table, or field, then pass the returned exact reference to the
+fail-closed `lineage upstream` trace.
+
 ### Built for coding harnesses
 
 TAREL is primarily a CLI for coding harnesses such as Codex, Claude Code, Pi, and similar agent
@@ -212,11 +234,19 @@ tarel ui retail-demo \
   --lineage REPORT_LINEAGE \
   --lineage ETL_LINEAGE \
   --edit
+
+# Open all graphs in a workspace, optionally narrowed by the shared scope resolver
+tarel ui --workspace enterprise --system commercial --zone revenue \
+  --lineage REPORT_LINEAGE --lineage ETL_LINEAGE
 ```
 
 The UI binds only to `127.0.0.1`, makes no external requests, and adds no Python dependency. Its
-graph view focuses on one table and its immediate relationships instead of rendering an unreadable
-full-schema hairball. The annotation queue puts table and view descriptions first, keeps evidence
+graph view can show one graph or a filtered multi-graph workspace. Its **Space** mode groups the
+estate by system, area, graph, and schema; **Lineage** mode replaces schema relationships with the
+selected data and process flows. Resolved upstream traces can be moved from the evidence drawer
+onto the same canvas. Client-side scope controls can hide systems, areas, graphs, schemas, and
+zones without changing persisted workspace definitions. The annotation queue puts table and view
+descriptions first, keeps evidence
 beside the editor, and can approve a table together with all field proposals. Zones can be created
 from a selected object; additional objects can then be dragged onto the zone. In edit mode, the UI
 can also create a manual procedure or script and connect one source object to one target object
@@ -619,6 +649,26 @@ tarel lineage review enterprise-etl ITEM_ID \
 tarel lineage show enterprise-etl --view tables
 ```
 
+Find is deliberately tolerant while tracing remains exact and fail-closed:
+
+```bash
+tarel lineage find "total sales report card" \
+  --lineage reporting --lineage warehouse-etl \
+  --graph warehouse --mode bm25
+tarel lineage find "report card for total sales" \
+  --lineage reporting --lineage warehouse-etl \
+  --graph warehouse --mode hybrid --format json
+
+tarel lineage upstream \
+  powerbi.AdventureWorksSales.Report.SalesOverview.TotalSalesCard \
+  --lineage reporting --lineage warehouse-etl \
+  --graph warehouse
+```
+
+Lexical and BM25 modes have no model dependency. Vector and hybrid modes use the optional local
+embedding model and rerank a bounded deterministic candidate set; they do not embed an entire
+enterprise graph on every invocation. Use the returned exact reference with `lineage upstream`.
+
 Missing operational knowledge can be added without editing an imported workflow document. First
 create a job in a separate manual overlay, then add one evidence-backed source-to-target hop:
 
@@ -714,7 +764,7 @@ TTLs, or session controls. A consuming agent or application can map the stable a
 to its own caching mechanism. See the
 [context packet contract](https://github.com/Mattiascherzgit/tarel/blob/master/docs/context-contract.md).
 
-## Workspaces, areas, and zones
+## Multi-graph workspaces and trusted joins
 
 Graphs remain independent source projections. A workspace organizes them without copying or
 rewriting their nodes:
@@ -722,12 +772,15 @@ rewriting their nodes:
 ```text
 workspace
 └── system
-    └── area
-        └── schema
+    ├── graphs
+    ├── areas          -> graph:schema
+    ├── zones          -> graph:object (overlapping)
+    └── relationships  -> graph:object.field <-> graph:object.field
 ```
 
 Zones are explicit overlapping sets of tables and views. They may cross schemas and areas within
-one system.
+one system. Explicit workspace relationships connect fields across independent graphs without
+rewriting either source graph.
 
 ```bash
 tarel workspace create enterprise
@@ -739,10 +792,28 @@ tarel workspace zone define enterprise commercial revenue \
   --object retail-demo:main.F_SLS_02 \
   --object retail-demo:main.D_DATE
 tarel workspace zone show enterprise commercial revenue
+tarel workspace scope enterprise --system commercial --zone revenue
+
+tarel workspace relationship add enterprise \
+  --from retail-demo:main.F_SLS_01.CustomerId \
+  --to erp:public.Customer.CustomerId \
+  --reason "Confirmed shared customer identifier"
+tarel workspace relationship validate enterprise RELATIONSHIP_ID \
+  --reason "Reviewed with both source owners"
+
+tarel search enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+tarel context build enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
 ```
 
 Change Radar reports which areas and zones are affected by a graph refresh without rewriting their
-definitions automatically. See
+definitions automatically. Scope resolution is deterministic and emits a stable hash; repeated
+values of one facet form a union, while different facets narrow the result. Search and context use
+that same resolved object set and rank only inside it. Context expands only through declared
+foreign keys and human-validated relationship candidates, including validated cross-graph
+relationships. Draft and rejected relationships remain visible evidence but cannot widen agent
+context. See
 [Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md).
 
 ## Local persistence and data boundaries
