@@ -150,6 +150,30 @@ class WorkspaceTests(TestCase):
                 2,
             )
 
+            with (
+                patch("tarel.application.FileGraphStore", return_value=graph_store),
+                patch("tarel.application.FileWorkspaceStore", return_value=workspace_store),
+            ):
+                scoped = json.loads(
+                    self._run(
+                        "workspace",
+                        "scope",
+                        "enterprise",
+                        "--system",
+                        "commercial",
+                        "--zone",
+                        "revenue",
+                        "--format",
+                        "json",
+                    )
+                )
+            self.assertEqual(scoped["graphs"], ["erp", "warehouse"])
+            self.assertEqual(
+                [(item["graph"], item["label"]) for item in scoped["objects"]],
+                [("warehouse", "sales.FactSales"), ("erp", "public.Orders")],
+            )
+            self.assertEqual(len(scoped["scope_hash"]), 64)
+
     def _run(self, *args: str) -> str:
         output = StringIO()
         errors = StringIO()

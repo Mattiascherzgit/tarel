@@ -212,11 +212,19 @@ tarel ui retail-demo \
   --lineage REPORT_LINEAGE \
   --lineage ETL_LINEAGE \
   --edit
+
+# Open all graphs in a workspace, optionally narrowed by the shared scope resolver
+tarel ui --workspace enterprise --system commercial --zone revenue \
+  --lineage REPORT_LINEAGE --lineage ETL_LINEAGE
 ```
 
 The UI binds only to `127.0.0.1`, makes no external requests, and adds no Python dependency. Its
-graph view focuses on one table and its immediate relationships instead of rendering an unreadable
-full-schema hairball. The annotation queue puts table and view descriptions first, keeps evidence
+graph view can show one graph or a filtered multi-graph workspace. Its **Space** mode groups the
+estate by system, area, graph, and schema; **Lineage** mode replaces schema relationships with the
+selected data and process flows. Resolved upstream traces can be moved from the evidence drawer
+onto the same canvas. Client-side scope controls can hide systems, areas, graphs, schemas, and
+zones without changing persisted workspace definitions. The annotation queue puts table and view
+descriptions first, keeps evidence
 beside the editor, and can approve a table together with all field proposals. Zones can be created
 from a selected object; additional objects can then be dragged onto the zone. In edit mode, the UI
 can also create a manual procedure or script and connect one source object to one target object
@@ -739,10 +747,12 @@ tarel workspace zone define enterprise commercial revenue \
   --object retail-demo:main.F_SLS_02 \
   --object retail-demo:main.D_DATE
 tarel workspace zone show enterprise commercial revenue
+tarel workspace scope enterprise --system commercial --zone revenue
 ```
 
 Change Radar reports which areas and zones are affected by a graph refresh without rewriting their
-definitions automatically. See
+definitions automatically. Scope resolution is deterministic and emits a stable hash; repeated
+values of one facet form a union, while different facets narrow the result. See
 [Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md).
 
 ## Local persistence and data boundaries

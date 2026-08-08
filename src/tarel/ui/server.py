@@ -25,6 +25,7 @@ from tarel.application import (
     list_workspaces_use_case,
     load_graph_use_case,
     load_workspace_use_case,
+    resolve_workspace_scope_use_case,
 )
 from tarel.graph.contracts import GraphFailure
 from tarel.graph.revision import graph_revision
@@ -38,7 +39,12 @@ from tarel.lineage.application import (
 from tarel.lineage.contracts import LineageFailure
 from tarel.lineage.revision import lineage_revision
 from tarel.relationships.core import RelationshipFailure
-from tarel.ui.presentation import browser_graph, browser_lineages, workspace_revision
+from tarel.ui.presentation import (
+    browser_graph,
+    browser_lineages,
+    browser_workspace,
+    workspace_revision,
+)
 from tarel.workspaces.contracts import WorkspaceFailure
 
 _MAX_REQUEST_BYTES = 256 * 1024
@@ -58,7 +64,13 @@ class UIFailure(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class UIConfig:
-    graph: str
+    graph: str | None = None
+    workspace: str | None = None
+    systems: tuple[str, ...] = ()
+    graphs: tuple[str, ...] = ()
+    areas: tuple[str, ...] = ()
+    schemas: tuple[str, ...] = ()
+    zones: tuple[str, ...] = ()
     lineages: tuple[str, ...] = ()
     editable: bool = False
 
@@ -69,9 +81,20 @@ class TarelUIBackend:
         self._lineages = list(config.lineages)
 
     def bootstrap(self) -> dict[str, object]:
-        graph = load_graph_use_case(self.config.graph)
-        workspaces = tuple(load_workspace_use_case(name) for name in list_workspaces_use_case())
         documents = tuple(load_lineage_use_case(name) for name in self._lineages)
+        if self.config.workspace:
+            workspace = load_workspace_use_case(self.config.workspace)
+            scope = self._scope()
+            graphs = tuple(load_graph_use_case(name) for name in scope.graph_names)
+            return browser_workspace(
+                graphs,
+                scope,
+                workspace=workspace,
+                editable=self.config.editable,
+                lineage_documents=documents,
+            )
+        graph = load_graph_use_case(self._single_graph())
+        workspaces = tuple(load_workspace_use_case(name) for name in list_workspaces_use_case())
         return browser_graph(
             graph,
             workspaces=workspaces,
@@ -87,7 +110,7 @@ class TarelUIBackend:
             trace = trace_upstream_use_case(
                 _string(payload, "reference"),
                 lineage_names=names,
-                graph_names=(self.config.graph,),
+                graph_names=self._graph_names(),
                 max_hops=_integer(payload, "max_hops", default=12, minimum=1, maximum=100),
                 states=frozenset(_strings(payload, "states")) or None,
             )
@@ -95,19 +118,19 @@ class TarelUIBackend:
 
         self._require_editable()
         if route == "/api/annotation/edit":
-            self._check_graph_revision(payload)
+            graph_name = self._check_graph_revision(payload)
             patch = _object(payload, "patch")
             result = edit_annotation_use_case(
-                self.config.graph,
+                graph_name,
                 _string(payload, "reference"),
                 patch,
                 reason=_string(payload, "reason"),
             )
             return {"record": result.record.to_dict(), "revision": graph_revision(result.graph)}
         if route == "/api/annotation/decision":
-            self._check_graph_revision(payload)
+            graph_name = self._check_graph_revision(payload)
             result = decide_annotation_use_case(
-                self.config.graph,
+                graph_name,
                 _string(payload, "reference"),
                 state=_string(payload, "state"),
                 reason=_string(payload, "reason"),
@@ -188,15 +211,56 @@ class TarelUIBackend:
         if not self.config.editable:
             raise UIFailure("read_only", "Restart TAREL UI with --edit to change data.", status=403)
 
-    def _check_graph_revision(self, payload: dict[str, Any]) -> None:
+    def _check_graph_revision(self, payload: dict[str, Any]) -> str:
+        graph_name = self._payload_graph(payload)
         expected = _string(payload, "revision")
-        current = graph_revision(load_graph_use_case(self.config.graph))
+        current = graph_revision(load_graph_use_case(graph_name))
         if expected != current:
             raise UIFailure(
                 "stale_graph",
                 "The graph changed after this page was loaded. Reload before saving.",
                 status=409,
             )
+        return graph_name
+
+    def _scope(self):
+        if not self.config.workspace:
+            raise UIFailure("workspace_required", "A workspace is required for scoped UI mode.")
+        return resolve_workspace_scope_use_case(
+            self.config.workspace,
+            systems=self.config.systems,
+            graphs=self.config.graphs,
+            areas=self.config.areas,
+            schemas=self.config.schemas,
+            zones=self.config.zones,
+        )
+
+    def _graph_names(self) -> tuple[str, ...]:
+        if self.config.workspace:
+            return self._scope().graph_names
+        return (self._single_graph(),)
+
+    def _single_graph(self) -> str:
+        if self.config.graph:
+            return self.config.graph
+        raise UIFailure(
+            "ui_source_required",
+            "Choose a graph or pass --workspace for a multi-graph view.",
+        )
+
+    def _payload_graph(self, payload: dict[str, Any]) -> str:
+        value = _optional_string(payload.get("graph"))
+        names = self._graph_names()
+        if value is None:
+            if len(names) == 1:
+                return names[0]
+            raise UIFailure(
+                "graph_required",
+                "Choose the graph that owns the object before saving.",
+            )
+        if value not in names:
+            raise UIFailure("graph_outside_scope", f"Graph is outside the UI scope: {value}")
+        return value
 
     def _save_zone(self, payload: dict[str, Any]) -> dict[str, object]:
         workspace_name = _string(payload, "workspace")
@@ -204,8 +268,8 @@ class TarelUIBackend:
         area_name = _string(payload, "area")
         zone_name = _string(payload, "zone")
         description = _optional_string(payload.get("description"))
-        member_labels = _strings(payload, "members")
-        if not member_labels:
+        members = payload.get("members", [])
+        if not isinstance(members, list) or not members:
             raise UIFailure("empty_zone", "A zone requires at least one table or view.")
 
         existing_names = set(list_workspaces_use_case())
@@ -223,30 +287,22 @@ class TarelUIBackend:
             workspace = load_workspace_use_case(workspace_name)
 
         system = next((item for item in workspace.systems if item.name == system_name), None)
+        member_refs = self._zone_member_references(members)
+        member_graphs = tuple(sorted({item[0] for item in member_refs}))
         if system is None:
             define_workspace_system_use_case(
                 workspace_name,
                 system_name,
-                graph_names=(self.config.graph,),
+                graph_names=member_graphs,
                 description="Local TAREL UI system.",
             )
-        elif self.config.graph not in system.graphs:
+        elif not set(member_graphs) <= set(system.graphs):
             define_workspace_system_use_case(
                 workspace_name,
                 system_name,
-                graph_names=tuple(sorted((*system.graphs, self.config.graph))),
+                graph_names=tuple(sorted(set(system.graphs) | set(member_graphs))),
                 description=system.description,
             )
-
-        graph = load_graph_use_case(self.config.graph)
-        objects = {
-            node.label: node
-            for node in graph.nodes
-            if node.type in {"table", "view"}
-        }
-        missing = sorted(set(member_labels) - set(objects))
-        if missing:
-            raise UIFailure("zone_object_not_found", f"Unknown graph object: {missing[0]}")
 
         workspace = load_workspace_use_case(workspace_name)
         system = next(item for item in workspace.systems if item.name == system_name)
@@ -256,8 +312,8 @@ class TarelUIBackend:
             for schema in area.schemas
         }
         required = {
-            (self.config.graph, str(objects[label].metadata.get("namespace") or ""))
-            for label in member_labels
+            (graph_name, namespace)
+            for graph_name, _label, namespace in member_refs
         }
         unassigned = required - assigned
         if unassigned:
@@ -279,13 +335,58 @@ class TarelUIBackend:
             workspace_name,
             system_name,
             zone_name,
-            object_references=tuple(f"{self.config.graph}:{label}" for label in member_labels),
+            object_references=tuple(
+                f"{graph_name}:{label}" for graph_name, label, _namespace in member_refs
+            ),
             description=description,
         )
         return {
             "workspace": result.workspace.to_dict(),
             "workspace_revision": workspace_revision(result.workspace),
         }
+
+    def _zone_member_references(
+        self,
+        members: list[object],
+    ) -> tuple[tuple[str, str, str], ...]:
+        references: list[tuple[str, str, str]] = []
+        for value in members:
+            if isinstance(value, str):
+                graph_name = self._payload_graph({})
+                reference = value
+                object_id = None
+            elif isinstance(value, dict):
+                graph_name = _string(value, "graph")
+                if graph_name not in self._graph_names():
+                    raise UIFailure(
+                        "graph_outside_scope",
+                        f"Graph is outside the UI scope: {graph_name}",
+                    )
+                reference = _optional_string(value.get("label"))
+                object_id = _optional_string(value.get("object_id"))
+                if reference is None and object_id is None:
+                    raise UIFailure(
+                        "invalid_request",
+                        "Zone members require label or object_id.",
+                    )
+            else:
+                raise UIFailure("invalid_request", "Zone members must be strings or objects.")
+
+            graph = load_graph_use_case(graph_name)
+            matches = [
+                node
+                for node in graph.nodes
+                if node.type in {"table", "view"}
+                and (node.id == object_id or node.label == reference)
+            ]
+            if len(matches) != 1:
+                shown = reference or object_id or "unknown"
+                raise UIFailure("zone_object_not_found", f"Unknown graph object: {shown}")
+            node = matches[0]
+            references.append(
+                (graph_name, node.label, str(node.metadata.get("namespace") or ""))
+            )
+        return tuple(sorted(set(references)))
 
 
 class _Server(ThreadingHTTPServer):
@@ -373,8 +474,14 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def run_ui(
-    graph: str,
+    graph: str | None,
     *,
+    workspace: str | None = None,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
     lineages: tuple[str, ...] = (),
     editable: bool = False,
     port: int = 0,
@@ -382,7 +489,24 @@ def run_ui(
 ) -> int:
     if port < 0 or port > 65535:
         raise UIFailure("invalid_port", "Port must be between 0 and 65535.")
-    backend = TarelUIBackend(UIConfig(graph=graph, lineages=lineages, editable=editable))
+    if bool(graph) == bool(workspace):
+        raise UIFailure(
+            "ui_source_required",
+            "Choose exactly one graph or one --workspace.",
+        )
+    backend = TarelUIBackend(
+        UIConfig(
+            graph=graph,
+            workspace=workspace,
+            systems=systems,
+            graphs=graphs,
+            areas=areas,
+            schemas=schemas,
+            zones=zones,
+            lineages=lineages,
+            editable=editable,
+        )
+    )
     backend.bootstrap()
     server = _Server(("127.0.0.1", port), backend, secrets.token_urlsafe(32))
     address = f"http://127.0.0.1:{server.server_port}/"

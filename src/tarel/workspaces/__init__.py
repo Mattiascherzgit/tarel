@@ -9,10 +9,14 @@ from tarel.workspaces.contracts import (
     Zone,
     ZoneMember,
 )
+from tarel.workspaces.scope import ResolvedScope, ResolvedScopeObject, ScopeSelection
 
 __all__ = [
     "Area",
+    "ResolvedScope",
+    "ResolvedScopeObject",
     "SchemaReference",
+    "ScopeSelection",
     "WorkspaceDocument",
     "WorkspaceFailure",
     "WorkspaceSystem",

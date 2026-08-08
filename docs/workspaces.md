@@ -52,6 +52,32 @@ tarel workspace zone define enterprise commercial revenue \
 tarel workspace zone show enterprise commercial revenue --format json
 ```
 
+Resolve the same hierarchy to a deterministic set of graph objects:
+
+```bash
+tarel workspace scope enterprise \
+  --system commercial \
+  --area analytics \
+  --area operations \
+  --zone revenue \
+  --format json
+```
+
+Repeated values of one facet form a union. Different facets narrow the result. Short area and zone
+names are accepted when unambiguous; otherwise use `SYSTEM:NAME`. The output includes every
+resolved object's system, area, graph, schema, zones, stable object ID, and a deterministic scope
+hash.
+
+The optional UI consumes this same resolver:
+
+```bash
+tarel ui --workspace enterprise --system commercial --lineage sales-etl
+```
+
+The Space canvas groups all selected graphs by their organizational location. Its filters only
+change the visible projection. Lineage mode shows selected data and process flows, and an upstream
+trace can be rendered directly on that canvas.
+
 `define` is desired-state based: repeating it for the same system, area, or zone replaces that
 definition atomically. TAREL rejects duplicate schema ownership, unknown graphs or schemas,
 unknown zone objects, and zone members whose schema has not yet been assigned to an area.
@@ -70,5 +96,5 @@ later compilation of stable system-, area-, schema-, or zone-level agent context
 ## Deliberately deferred
 
 The first contract does not infer areas or zones, use regular expressions, nest zones, grant
-permissions, or alter context compilation. Multi-graph context projection, revisions for workspace
-content, stale-reference repair, and LLM context-caching modes are separate follow-up slices.
+permissions, or alter context compilation. Multi-graph context packets, stale-reference repair,
+and LLM context-caching policies remain separate follow-up slices.

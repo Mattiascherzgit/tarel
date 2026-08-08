@@ -98,6 +98,7 @@ from tarel.workspaces.core import (
     resolve_zone,
 )
 from tarel.workspaces.impact import WorkspaceChangeImpact, workspace_change_impacts
+from tarel.workspaces.scope import ResolvedScope, ScopeSelection, resolve_scope
 from tarel.workspaces.store import FileWorkspaceStore
 
 
@@ -387,6 +388,37 @@ def list_workspaces_use_case() -> tuple[str, ...]:
 
 def load_workspace_use_case(name: str) -> WorkspaceDocument:
     return FileWorkspaceStore().load(name)
+
+
+def resolve_workspace_scope_use_case(
+    workspace_name: str,
+    *,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
+) -> ResolvedScope:
+    workspace = FileWorkspaceStore().load(workspace_name)
+    graph_names = {
+        graph_name
+        for system in workspace.systems
+        if not systems or system.name in systems
+        for graph_name in system.graphs
+    }
+    graph_store = FileGraphStore()
+    loaded = {name: graph_store.load(name) for name in sorted(graph_names)}
+    return resolve_scope(
+        workspace,
+        loaded,
+        ScopeSelection(
+            systems=systems,
+            graphs=graphs,
+            areas=areas,
+            schemas=schemas,
+            zones=zones,
+        ),
+    )
 
 
 def define_workspace_system_use_case(

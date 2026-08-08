@@ -23,9 +23,10 @@
       <main id="workspace">
         <section id="graph-view" class="view is-active">
           <aside class="sidebar">
-            <div class="pane-heading"><p class="eyebrow">Schema explorer</p><h1>Objects</h1></div>
+            <div class="pane-heading"><p class="eyebrow">Estate explorer</p><h1>Objects</h1></div>
             <label class="search"><span>⌕</span><input id="object-search" type="search" placeholder="Find table or view" autocomplete="off" /></label>
             <div class="filter-row"><button class="chip is-active" data-kind="all">All</button><button class="chip" data-kind="table">Tables</button><button class="chip" data-kind="view">Views</button></div>
+            <details class="scope-panel" open><summary><span>Visible scope</span><small id="scope-count"></small></summary><div id="scope-filters"></div></details>
             <div id="object-list" class="object-list" aria-label="Graph objects"></div>
             <div class="zone-heading"><div><p class="eyebrow">Business context</p><h2>Zones</h2></div><button id="new-zone" class="icon-button" title="Create zone">＋</button></div>
             <p class="zone-help">Drag an object from above onto a zone.</p>
@@ -35,13 +36,13 @@
           <section class="canvas-pane">
             <div class="canvas-toolbar">
               <div><strong id="canvas-title">Schema topology</strong><span id="canvas-subtitle"></span></div>
-              <div class="toolbar-actions"><button id="add-lineage" class="quiet-button">＋ Job / hop</button><button id="show-all" class="quiet-button">Show all</button><button id="fit-graph" class="quiet-button">Fit focus</button><button id="trace-selected" class="primary-button">Trace upstream</button></div>
+              <div class="toolbar-actions"><div class="canvas-mode" role="group" aria-label="Canvas mode"><button class="chip is-active" data-canvas-mode="space">Space</button><button class="chip" data-canvas-mode="lineage">Lineage</button></div><button id="add-lineage" class="quiet-button">＋ Job / hop</button><button id="show-all" class="quiet-button">Show all</button><button id="fit-graph" class="quiet-button">Fit focus</button><button id="trace-selected" class="primary-button">Trace upstream</button></div>
             </div>
             <div id="graph-canvas" role="application" aria-label="Interactive schema graph"></div>
             <section id="lineage-drawer" class="lineage-drawer" hidden>
               <div class="drawer-heading"><div><p class="eyebrow">Resolved lineage</p><h2 id="lineage-title">Upstream path</h2></div><button id="close-lineage" class="icon-button" aria-label="Close lineage">×</button></div>
               <form id="lineage-form" class="lineage-form"><input id="lineage-reference" required placeholder="Report, measure, table or field reference" /><button class="primary-button">Trace</button></form>
-              <div id="lineage-status" class="notice"></div>
+              <div class="trace-actions"><div id="lineage-status" class="notice"></div><button id="show-trace-canvas" class="primary-button" hidden>Show path on canvas</button></div>
               <div id="lineage-origins" class="origin-list"></div>
               <div id="lineage-hops" class="hop-list"></div>
               <section class="manual-lineage-section"><div class="drawer-heading"><div><p class="eyebrow">Human-authored overlay</p><h2>Manual jobs &amp; hops</h2></div><button id="add-lineage-drawer" class="quiet-button">＋ Add</button></div><div id="manual-lineage-list" class="manual-lineage-list"></div></section>

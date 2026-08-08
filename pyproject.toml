@@ -71,7 +71,6 @@ only-include = [
   "src",
   "tests",
   "tools/check_distribution.py",
-  "uv.lock",
 ]
 
 [tool.hatch.build]

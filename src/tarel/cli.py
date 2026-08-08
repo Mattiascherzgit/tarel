@@ -46,6 +46,7 @@ from tarel.application import (
     plan_annotations_use_case,
     probe_connector_use_case,
     refresh_graph_use_case,
+    resolve_workspace_scope_use_case,
     retrieval_index_status_use_case,
     run_annotation_batch_use_case,
     sample_connector_use_case,
@@ -75,6 +76,7 @@ from tarel.retrieval.local import DEFAULT_MODEL_NAME
 from tarel.search import SearchFailure, SearchResults
 from tarel.workspaces.contracts import WorkspaceDocument, WorkspaceFailure
 from tarel.workspaces.core import ResolvedZone
+from tarel.workspaces.scope import ResolvedScope
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -129,6 +131,14 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_show = workspace_commands.add_parser("show", help="Show one workspace hierarchy.")
     workspace_show.add_argument("name")
     _add_format_argument(workspace_show)
+
+    workspace_scope = workspace_commands.add_parser(
+        "scope",
+        help="Resolve systems, areas, schemas, graphs, and zones to graph objects.",
+    )
+    workspace_scope.add_argument("name", help="Workspace name.")
+    _add_scope_arguments(workspace_scope)
+    _add_format_argument(workspace_scope)
 
     workspace_system = workspace_commands.add_parser(
         "system",
@@ -353,7 +363,9 @@ def build_parser() -> argparse.ArgumentParser:
         "ui",
         help="Open the optional local graph, lineage, and annotation browser.",
     )
-    ui.add_argument("graph", help="Local graph to inspect.")
+    ui.add_argument("graph", nargs="?", help="Single local graph to inspect.")
+    ui.add_argument("--workspace", help="Open a workspace across one or more graphs.")
+    _add_scope_arguments(ui)
     ui.add_argument(
         "--lineage",
         action="append",
@@ -636,6 +648,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 return run_ui(
                     args.graph,
+                    workspace=args.workspace,
+                    systems=tuple(args.systems or ()),
+                    graphs=tuple(args.graphs or ()),
+                    areas=tuple(args.areas or ()),
+                    schemas=tuple(args.schemas or ()),
+                    zones=tuple(args.zones or ()),
                     lineages=tuple(args.lineages or ()),
                     editable=args.edit,
                     port=args.port,
@@ -681,6 +699,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "workspace" and args.workspace_command == "show":
             result = load_workspace_use_case(args.name)
             _render_workspace(result, output_format=args.format)
+            return 0
+
+        if args.command == "workspace" and args.workspace_command == "scope":
+            result = resolve_workspace_scope_use_case(
+                args.name,
+                systems=tuple(args.systems or ()),
+                graphs=tuple(args.graphs or ()),
+                areas=tuple(args.areas or ()),
+                schemas=tuple(args.schemas or ()),
+                zones=tuple(args.zones or ()),
+            )
+            _render_resolved_scope(result, output_format=args.format)
             return 0
 
         if (
@@ -1244,6 +1274,39 @@ def _add_format_argument(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_scope_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--system",
+        action="append",
+        dest="systems",
+        help="Include a system; repeat to include multiple systems.",
+    )
+    parser.add_argument(
+        "--graph",
+        action="append",
+        dest="graphs",
+        help="Limit the scope to a graph; repeat to include multiple graphs.",
+    )
+    parser.add_argument(
+        "--area",
+        action="append",
+        dest="areas",
+        help="Limit to an area (NAME or SYSTEM:NAME); repeat for a union.",
+    )
+    parser.add_argument(
+        "--schema",
+        action="append",
+        dest="schemas",
+        help="Limit to a schema as GRAPH:NAMESPACE; repeat for a union.",
+    )
+    parser.add_argument(
+        "--zone",
+        action="append",
+        dest="zones",
+        help="Limit to a zone (NAME or SYSTEM:NAME); repeat for a union.",
+    )
+
+
 def _add_annotation_state_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--annotation-state",
@@ -1557,6 +1620,20 @@ def _render_resolved_zone(zone: ResolvedZone, *, output_format: str) -> None:
     print(f"Objects: {len(zone.objects)}")
     for item in zone.objects:
         print(f"  {item.graph}:{item.label} [{item.type}; area={item.area}]")
+
+
+def _render_resolved_scope(scope: ResolvedScope, *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(scope.to_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    print(f"Workspace: {scope.workspace}")
+    print(f"Scope hash: {scope.scope_hash}")
+    print(f"Graphs: {', '.join(scope.graph_names)}")
+    print(f"Objects: {len(scope.objects)}")
+    for item in scope.objects:
+        context = f"system={item.system}; area={item.area or '-'}"
+        zones = f"; zones={','.join(item.zones)}" if item.zones else ""
+        print(f"  {item.graph}:{item.label} [{item.type}; {context}{zones}]")
 
 
 def _render_graph_summary(
