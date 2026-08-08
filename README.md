@@ -40,6 +40,28 @@ task.
 
 TAREL stands for **Topology, Annotation, Retrieval, Evidence & Lineage**.
 
+### One question across several systems
+
+TAREL does not require independent source graphs to be flattened into one catalog. A workspace
+groups them into systems, areas, schemas, and overlapping zones, while reviewed workspace
+relationships connect fields that belong together across graph boundaries. The same selectors are
+used by discovery and context compilation:
+
+```bash
+tarel search enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+tarel context build enterprise "customer revenue" \
+  --workspace --system commercial --zone revenue --mode bm25
+```
+
+Both commands resolve the scope before ranking and emit the same deterministic scope hash. The
+context can expand across validated workspace relationships, but never across draft or rejected
+claims. Source graphs remain independent and unchanged.
+
+Operational lineage is kept explicit as a second path: use tolerant `lineage find` to locate a
+report, measure, job, procedure, table, or field, then pass the returned exact reference to the
+fail-closed `lineage upstream` trace.
+
 ### Built for coding harnesses
 
 TAREL is primarily a CLI for coding harnesses such as Codex, Claude Code, Pi, and similar agent
@@ -633,8 +655,14 @@ Find is deliberately tolerant while tracing remains exact and fail-closed:
 tarel lineage find "total sales report card" \
   --lineage reporting --lineage warehouse-etl \
   --graph warehouse --mode bm25
-tarel lineage find "which visual shows annual revenue" \
-  --lineage reporting --graph warehouse --mode hybrid
+tarel lineage find "report card for total sales" \
+  --lineage reporting --lineage warehouse-etl \
+  --graph warehouse --mode hybrid --format json
+
+tarel lineage upstream \
+  powerbi.AdventureWorksSales.Report.SalesOverview.TotalSalesCard \
+  --lineage reporting --lineage warehouse-etl \
+  --graph warehouse
 ```
 
 Lexical and BM25 modes have no model dependency. Vector and hybrid modes use the optional local
@@ -736,7 +764,7 @@ TTLs, or session controls. A consuming agent or application can map the stable a
 to its own caching mechanism. See the
 [context packet contract](https://github.com/Mattiascherzgit/tarel/blob/master/docs/context-contract.md).
 
-## Workspaces, areas, and zones
+## Multi-graph workspaces and trusted joins
 
 Graphs remain independent source projections. A workspace organizes them without copying or
 rewriting their nodes:
@@ -744,8 +772,10 @@ rewriting their nodes:
 ```text
 workspace
 └── system
-    └── area
-        └── schema
+    ├── graphs
+    ├── areas          -> graph:schema
+    ├── zones          -> graph:object (overlapping)
+    └── relationships  -> graph:object.field <-> graph:object.field
 ```
 
 Zones are explicit overlapping sets of tables and views. They may cross schemas and areas within
@@ -780,8 +810,10 @@ tarel context build enterprise "customer revenue" \
 Change Radar reports which areas and zones are affected by a graph refresh without rewriting their
 definitions automatically. Scope resolution is deterministic and emits a stable hash; repeated
 values of one facet form a union, while different facets narrow the result. Search and context use
-that same resolved object set. Context expands only through declared foreign keys and
-human-validated relationship candidates, including validated cross-graph relationships. See
+that same resolved object set and rank only inside it. Context expands only through declared
+foreign keys and human-validated relationship candidates, including validated cross-graph
+relationships. Draft and rejected relationships remain visible evidence but cannot widen agent
+context. See
 [Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md).
 
 ## Local persistence and data boundaries
