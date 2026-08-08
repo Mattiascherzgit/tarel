@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from tarel.graph.store import FileGraphStore
 from tarel.lineage.analysis_cache import (
     FileLineageAnalysisCache,
     LineageAnalysisCacheIdentity,
@@ -29,6 +30,12 @@ from tarel.lineage.source import LineageInput, load_lineage_input
 from tarel.lineage.status import LineageStatus, lineage_status
 from tarel.lineage.store import FileLineageStore
 from tarel.lineage.tasks import LineageTask, lineage_analyzer_version, plan_lineage_tasks
+from tarel.lineage.traversal import (
+    LineageReference,
+    UpstreamTrace,
+    find_lineage_references,
+    trace_upstream,
+)
 from tarel.providers.contracts import (
     Message,
     ProviderFailure,
@@ -349,3 +356,38 @@ def table_lineage_view_use_case(name: str) -> tuple[TableLineage, ...]:
 
 def lineage_status_use_case(name: str) -> LineageStatus:
     return lineage_status(FileLineageStore().load(name))
+
+
+def find_lineage_references_use_case(
+    query: str,
+    *,
+    lineage_names: tuple[str, ...],
+    graph_names: tuple[str, ...] = (),
+    limit: int = 20,
+) -> tuple[LineageReference, ...]:
+    documents = _load_lineage_documents(lineage_names)
+    graphs = tuple(FileGraphStore().load(name) for name in graph_names)
+    return find_lineage_references(documents, graphs, query, limit=limit)
+
+
+def trace_upstream_use_case(
+    reference: str,
+    *,
+    lineage_names: tuple[str, ...],
+    graph_names: tuple[str, ...] = (),
+    max_hops: int = 12,
+    states: frozenset[str] | None = None,
+) -> UpstreamTrace:
+    documents = _load_lineage_documents(lineage_names)
+    graphs = tuple(FileGraphStore().load(name) for name in graph_names)
+    selected = states if states is not None else None
+    if selected is None:
+        return trace_upstream(documents, graphs, reference, max_hops=max_hops)
+    return trace_upstream(documents, graphs, reference, max_hops=max_hops, states=selected)
+
+
+def _load_lineage_documents(names: tuple[str, ...]) -> tuple[LineageDocument, ...]:
+    store = FileLineageStore()
+    if not names:
+        raise LineageFailure("lineage_not_found", "No local lineage documents are available.")
+    return tuple(store.load(name) for name in names)
