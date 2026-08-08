@@ -1,11 +1,12 @@
 # Third-party components
 
-TAREL's base installation has no runtime dependencies. The following components are installed or
-downloaded only when a user explicitly enables an optional capability. They are not bundled in
-TAREL's source or wheel distributions.
+TAREL's base installation has no Python runtime dependencies. The optional local browser UI
+bundles Cytoscape.js as a static browser asset. The remaining components are installed or
+downloaded only when a user explicitly enables their capability.
 
 | Component | TAREL capability | Version or artifact | License |
 |---|---|---|---|
+| [Cytoscape.js](https://js.cytoscape.org/) | Local graph and lineage browser | `3.34.0` (bundled static asset) | MIT |
 | [pymssql](https://github.com/pymssql/pymssql) | SQL Server connector | `>=2.3,<3` | [LGPL-2.1](https://github.com/pymssql/pymssql/blob/master/LICENSE) |
 | [llama-cpp-python](https://github.com/abetlen/llama-cpp-python) | Local CPU embeddings | `>=0.3.16,<0.4` | [MIT](https://github.com/abetlen/llama-cpp-python/blob/main/LICENSE.md) |
 | [llama.cpp](https://github.com/ggml-org/llama.cpp) | Native runtime used by `llama-cpp-python` | selected by `llama-cpp-python` | [MIT](https://github.com/ggml-org/llama.cpp/blob/master/LICENSE) |

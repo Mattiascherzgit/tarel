@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="tarel-token" content="__TAREL_TOKEN__" />
+    <title>TAREL · Graph &amp; Review</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to workspace</a>
+    <div class="shell">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark">t</span><span><strong>tarel</strong><small>Topology · Annotation · Retrieval · Evidence · Lineage</small></span></div>
+        <nav class="view-tabs" aria-label="Views">
+          <button class="tab is-active" data-view="graph">Graph &amp; Lineage</button>
+          <button class="tab" data-view="review">Annotation Review <span id="review-badge">0</span></button>
+        </nav>
+        <div class="session-meta"><span id="graph-name">Loading…</span><span id="revision" class="mono"></span><span id="mode" class="mode-badge"></span></div>
+      </header>
+
+      <main id="workspace">
+        <section id="graph-view" class="view is-active">
+          <aside class="sidebar">
+            <div class="pane-heading"><p class="eyebrow">Schema explorer</p><h1>Objects</h1></div>
+            <label class="search"><span>⌕</span><input id="object-search" type="search" placeholder="Find table or view" autocomplete="off" /></label>
+            <div class="filter-row"><button class="chip is-active" data-kind="all">All</button><button class="chip" data-kind="table">Tables</button><button class="chip" data-kind="view">Views</button></div>
+            <div id="object-list" class="object-list" aria-label="Graph objects"></div>
+            <div class="zone-heading"><div><p class="eyebrow">Business context</p><h2>Zones</h2></div><button id="new-zone" class="icon-button" title="Create zone">＋</button></div>
+            <p class="zone-help">Drag an object from above onto a zone.</p>
+            <div id="zone-list" class="zone-list"></div>
+          </aside>
+
+          <section class="canvas-pane">
+            <div class="canvas-toolbar">
+              <div><strong id="canvas-title">Schema topology</strong><span id="canvas-subtitle"></span></div>
+              <div class="toolbar-actions"><button id="add-lineage" class="quiet-button">＋ Job / hop</button><button id="show-all" class="quiet-button">Show all</button><button id="fit-graph" class="quiet-button">Fit focus</button><button id="trace-selected" class="primary-button">Trace upstream</button></div>
+            </div>
+            <div id="graph-canvas" role="application" aria-label="Interactive schema graph"></div>
+            <section id="lineage-drawer" class="lineage-drawer" hidden>
+              <div class="drawer-heading"><div><p class="eyebrow">Resolved lineage</p><h2 id="lineage-title">Upstream path</h2></div><button id="close-lineage" class="icon-button" aria-label="Close lineage">×</button></div>
+              <form id="lineage-form" class="lineage-form"><input id="lineage-reference" required placeholder="Report, measure, table or field reference" /><button class="primary-button">Trace</button></form>
+              <div id="lineage-status" class="notice"></div>
+              <div id="lineage-origins" class="origin-list"></div>
+              <div id="lineage-hops" class="hop-list"></div>
+              <section class="manual-lineage-section"><div class="drawer-heading"><div><p class="eyebrow">Human-authored overlay</p><h2>Manual jobs &amp; hops</h2></div><button id="add-lineage-drawer" class="quiet-button">＋ Add</button></div><div id="manual-lineage-list" class="manual-lineage-list"></div></section>
+            </section>
+          </section>
+
+          <aside id="inspector" class="inspector"><div class="empty-state"><span class="empty-glyph">◎</span><h2>Select an object</h2><p>Inspect technical structure, semantic proposals, fields and relationships.</p></div></aside>
+        </section>
+
+        <section id="review-view" class="view review-layout">
+          <aside class="review-queue-pane">
+            <div class="pane-heading"><p class="eyebrow">Human in the loop</p><h1>Table descriptions</h1></div>
+            <p class="guidance">Review table-level meaning first. Field annotations stay visible without slowing down the queue.</p>
+            <div class="filter-row"><button class="review-filter chip is-active" data-review-filter="pending">To review</button><button class="review-filter chip" data-review-filter="all">All</button></div>
+            <div id="review-progress" class="progress-copy"></div><div class="progress-track"><span id="review-progress-bar"></span></div>
+            <nav id="review-list" class="review-list" aria-label="Annotation review queue"></nav>
+          </aside>
+
+          <section id="review-editor" class="review-editor"><div class="empty-state"><h2>No proposal selected</h2></div></section>
+          <aside id="review-evidence" class="evidence-pane"><div class="empty-state"><h2>Evidence</h2><p>Source observations and proposal provenance appear here.</p></div></aside>
+        </section>
+      </main>
+      <footer><span><i class="local-dot"></i>Local browser session</span><span>No external requests</span><span id="footer-status">Ready</span></footer>
+    </div>
+
+    <dialog id="zone-dialog">
+      <form id="zone-form" class="dialog-form">
+        <div class="drawer-heading"><div><p class="eyebrow">Workspace organization</p><h2>Create a zone</h2></div><button type="button" id="close-zone" class="icon-button">×</button></div>
+        <p>A zone may contain objects from different schemas. Existing workspace contracts remain authoritative.</p>
+        <div class="field-grid">
+          <label><span>Workspace</span><input name="workspace" value="tarel-ui" required /></label>
+          <label><span>System</span><input name="system" value="analytics" required /></label>
+          <label><span>Area for unassigned schemas</span><input name="area" value="discovered" required /></label>
+          <label><span>Zone name</span><input name="zone" placeholder="internet-sales" required /></label>
+          <label class="span-two"><span>Description</span><textarea name="description" placeholder="What connects these objects?"></textarea></label>
+        </div>
+        <p id="zone-selection" class="selection-note"></p>
+        <div class="dialog-actions"><button type="button" id="cancel-zone" class="quiet-button">Cancel</button><button class="primary-button">Create zone</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="lineage-dialog">
+      <div class="dialog-form">
+        <div class="drawer-heading"><div><p class="eyebrow">Manual lineage overlay</p><h2>Add a job or data-flow hop</h2></div><button type="button" id="close-lineage-dialog" class="icon-button">×</button></div>
+        <p>Manual entries stay separate from imported SQL Agent, Airflow, JSON or file lineage. New hops begin as drafts and require review.</p>
+        <div class="dialog-tabs"><button type="button" class="chip is-active" data-lineage-form="job">1 · Add job</button><button type="button" class="chip" data-lineage-form="hop">2 · Add hop</button></div>
+        <form id="manual-job-form" class="editor-form manual-form">
+          <div class="field-grid">
+            <label><span>Overlay</span><input name="lineage" list="manual-overlay-names" required /></label>
+            <label><span>Kind</span><select name="kind"><option value="procedure">Stored procedure</option><option value="script">Script / task</option></select></label>
+            <label><span>Display name</span><input name="job_name" placeholder="LoadFactSales" required /></label>
+            <label><span>Qualified name</span><input name="qualified_name" placeholder="etl.LoadFactSales" required /></label>
+            <label><span>Language</span><input name="language" value="tsql" required /></label>
+            <label><span>Source reference</span><input name="source_reference" placeholder="runbook:sales-load" required /></label>
+            <label class="span-two"><span>What does this job do?</span><textarea name="description" required></textarea></label>
+          </div>
+          <div class="dialog-actions"><button class="primary-button">Add job</button></div>
+        </form>
+        <form id="manual-hop-form" class="editor-form manual-form" hidden>
+          <div class="field-grid">
+            <label><span>Manual overlay</span><select name="lineage" required></select></label>
+            <label><span>Via job</span><select name="job" required></select></label>
+            <label><span>Source object</span><input name="source" list="graph-object-names" required /></label>
+            <label><span>Target object</span><input name="target" list="graph-object-names" required /></label>
+            <label><span>Operation</span><select name="operation"><option value="insert">Insert</option><option value="merge">Merge</option><option value="update">Update</option><option value="select_into">Select into</option><option value="delete">Delete</option><option value="truncate">Truncate</option></select></label>
+            <label><span>Source role</span><select name="role"><option value="business_data">Business data</option><option value="lookup">Lookup</option><option value="filter">Filter</option><option value="control">Control</option><option value="audit">Audit</option><option value="deduplication">Deduplication</option><option value="unknown">Unknown</option></select></label>
+            <label><span>Evidence reference</span><input name="evidence_reference" placeholder="runbook:sales-load" required /></label>
+            <label><span>Evidence lines</span><span class="inline-fields"><input name="line_start" type="number" min="1" value="1" required /><input name="line_end" type="number" min="1" value="1" required /></span></label>
+            <label class="span-two"><span>Why is this hop correct?</span><textarea name="reason" required></textarea></label>
+          </div>
+          <div class="dialog-actions"><button class="primary-button">Add draft hop</button></div>
+        </form>
+        <datalist id="manual-overlay-names"></datalist>
+        <datalist id="graph-object-names"></datalist>
+      </div>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+    <script src="/cytoscape.min.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -10,6 +10,8 @@ from typing import Any
 
 from tarel.lineage.application import (
     LineageChangeResult,
+    add_manual_hop_use_case,
+    add_manual_job_use_case,
     apply_lineage_proposal_use_case,
     build_lineage_use_case,
     decide_lineage_item_use_case,
@@ -24,6 +26,7 @@ from tarel.lineage.application import (
     trace_upstream_use_case,
 )
 from tarel.lineage.contracts import LineageFailure
+from tarel.lineage.revision import lineage_revision
 from tarel.lineage.status import lineage_status
 
 
@@ -122,6 +125,51 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
         choices=("draft", "review_required", "validated"),
     )
     _format(upstream)
+
+    add_job = commands.add_parser(
+        "add-job",
+        help="Add a human-authored procedure or script to a manual lineage overlay.",
+    )
+    add_job.add_argument("name", help="Manual lineage overlay name; created if missing.")
+    add_job.add_argument("--kind", required=True, choices=("procedure", "script"))
+    add_job.add_argument("--job-name", required=True)
+    add_job.add_argument("--qualified-name", required=True)
+    add_job.add_argument("--language", required=True)
+    add_job.add_argument("--source-reference", required=True)
+    add_job.add_argument("--description", required=True)
+    _format(add_job)
+
+    add_hop = commands.add_parser(
+        "add-hop",
+        help="Add a human-authored source-to-target hop through a manual job.",
+    )
+    add_hop.add_argument("name", help="Existing manual lineage overlay name.")
+    add_hop.add_argument("--job", required=True, help="Job ID or qualified name.")
+    add_hop.add_argument("--source", required=True)
+    add_hop.add_argument("--target", required=True)
+    add_hop.add_argument(
+        "--operation",
+        required=True,
+        choices=("delete", "insert", "merge", "select_into", "truncate", "update"),
+    )
+    add_hop.add_argument(
+        "--role",
+        default="business_data",
+        choices=(
+            "audit",
+            "business_data",
+            "control",
+            "deduplication",
+            "filter",
+            "lookup",
+            "unknown",
+        ),
+    )
+    add_hop.add_argument("--evidence-reference", required=True)
+    add_hop.add_argument("--reason", required=True)
+    add_hop.add_argument("--line-start", type=int, default=1)
+    add_hop.add_argument("--line-end", type=int, default=1)
+    _format(add_hop)
 
 
 def dispatch_lineage(args: argparse.Namespace) -> int | None:
@@ -225,6 +273,51 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
         )
         _render_upstream_trace(trace.to_dict(), output_format=args.format)
         return 0
+    if command == "add-job":
+        result = add_manual_job_use_case(
+            args.name,
+            kind=args.kind,
+            job_name=args.job_name,
+            qualified_name=args.qualified_name,
+            language=args.language,
+            source_reference=args.source_reference,
+            description=args.description,
+        )
+        _render_view(
+            {
+                "definition": result.definition.to_dict(),
+                "lineage": result.document.name,
+                "path": str(result.path),
+                "revision": lineage_revision(result.document),
+            },
+            "manual job",
+            output_format=args.format,
+        )
+        return 0
+    if command == "add-hop":
+        result = add_manual_hop_use_case(
+            args.name,
+            job_reference=args.job,
+            source=args.source,
+            target=args.target,
+            operation=args.operation,
+            role=args.role,
+            evidence_reference=args.evidence_reference,
+            reason=args.reason,
+            line_start=args.line_start,
+            line_end=args.line_end,
+        )
+        _render_view(
+            {
+                "item": result.item.to_dict(),
+                "lineage": result.document.name,
+                "path": str(result.path),
+                "revision": lineage_revision(result.document),
+            },
+            "manual hop",
+            output_format=args.format,
+        )
+        return 0
     return 0
 
 
@@ -316,6 +409,19 @@ def _render_view(payload: object, view: str, *, output_format: str) -> None:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
     if not isinstance(payload, dict):
+        return
+    if view == "manual job":
+        definition = payload.get("definition")
+        if isinstance(definition, dict):
+            print(f"Added manual job: {definition['qualified_name']}")
+            print(f"Lineage: {payload['lineage']}; revision: {payload['revision']}")
+        return
+    if view == "manual hop":
+        item = payload.get("item")
+        if isinstance(item, dict):
+            source = item["sources"][0]["target"]
+            print(f"Added manual hop: {source} -> {item['target']} [{item['state']}]")
+            print(f"Lineage: {payload['lineage']}; revision: {payload['revision']}")
         return
     if view == "status":
         _render_status(payload)
