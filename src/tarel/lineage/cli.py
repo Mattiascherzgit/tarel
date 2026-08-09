@@ -82,6 +82,12 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
     analyze.add_argument("--retry", type=int, default=1)
     analyze.add_argument("--review-passes", type=int, default=1)
     analyze.add_argument("--limit", type=int)
+    analyze.add_argument(
+        "--definition",
+        action="append",
+        dest="definitions",
+        help="Analyze only this exact definition ID, external ID, name, or qualified name.",
+    )
     analyze.add_argument("--max-output-tokens", type=int)
     analyze.add_argument(
         "--reasoning-effort",
@@ -231,6 +237,7 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
             timeout=args.timeout,
             retry=args.retry,
             limit=args.limit,
+            definition_references=tuple(args.definitions or ()),
             review_passes=args.review_passes,
             max_output_tokens=args.max_output_tokens,
             reasoning_effort=args.reasoning_effort,
@@ -399,6 +406,7 @@ def _render_document_change(payload: dict[str, object], *, output_format: str) -
         print(f"Definitions: {len(lineage['definitions'])}")
         print(f"Steps: {len(lineage['steps'])}")
         print(f"Claims: {len(lineage['claims'])}")
+        print(f"Materializations: {len(lineage['materializations'])}")
         print(f"Write units: {len(lineage['write_units'])}")
     status = payload.get("status")
     if isinstance(status, dict):
@@ -456,7 +464,8 @@ def _render_view(payload: object, view: str, *, output_format: str) -> None:
                 f"- {row['source']} -> {row['target']} via {row['via_definition']} [{row['state']}]"
             )
         else:
-            print(f"- {row['id']}: {row['operation']} {row['target']} [{row['state']}]")
+            operation = row.get("operation") or f"materialize:{row.get('mode')}"
+            print(f"- {row['id']}: {operation} {row['target']} [{row['state']}]")
 
 
 def _render_status(payload: dict[str, object]) -> None:
@@ -475,6 +484,7 @@ def _render_status(payload: dict[str, object]) -> None:
         if not isinstance(item, dict):
             continue
         claims = item["claims"]
+        materializations = item["materializations"]
         writes = item["write_units"]
         failure = item.get("failure")
         failure_text = (
@@ -482,7 +492,8 @@ def _render_status(payload: dict[str, object]) -> None:
         )
         print(
             f"- {item['definition_name']}: {item['analysis_state']}{failure_text}; "
-            f"observations={claims['total']}; writes={writes['total']} "
+            f"observations={claims['total']}; materializations={materializations['total']}; "
+            f"writes={writes['total']} "
             f"(draft={writes['draft']}, review_required={writes['review_required']}, "
             f"validated={writes['validated']}, rejected={writes['rejected']})"
         )

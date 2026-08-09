@@ -15,6 +15,7 @@ from tarel.lineage.contracts import (
     LineageEvidence,
     LineageExcludedWrite,
     LineageFailure,
+    LineageMaterialization,
     LineageStep,
     LineageWriteSource,
     LineageWriteUnit,
@@ -136,6 +137,66 @@ def build_lineage(name: str, source: LineageInput) -> LineageDocument:
         )
         for item in source.steps
     )
+    materializations = tuple(
+        sorted(
+            (
+                LineageMaterialization(
+                    id=stable_id(
+                        "materialization",
+                        item.mode,
+                        f"{by_external[item.definition_external_id].id}\n"
+                        f"{item.target}\n{item.source_reference}",
+                    ),
+                    definition_id=by_external[item.definition_external_id].id,
+                    target=item.target,
+                    mode=item.mode,
+                    state="draft",
+                    evidence=LineageEvidence(
+                        source="declared_materialization",
+                        reference=item.source_reference,
+                        reason=(
+                            f"The source manifest declares this definition as a {item.mode} "
+                            "materialization target."
+                        ),
+                        line_start=1,
+                        line_end=1,
+                    ),
+                )
+                for item in source.materializations
+            ),
+            key=lambda item: item.id,
+        )
+    )
+    claims = tuple(
+        sorted(
+            (
+                LineageClaim(
+                    id=stable_id(
+                        "claim",
+                        item.operation,
+                        f"{by_external[item.definition_external_id].id}\n"
+                        f"{item.target}\n{item.source_reference}\n"
+                        f"{item.line_start}\n{item.line_end}",
+                    ),
+                    definition_id=by_external[item.definition_external_id].id,
+                    operation=item.operation,
+                    target=item.target,
+                    state="draft",
+                    evidence=LineageEvidence(
+                        source="declared_reference",
+                        reference=(
+                            f"{item.source_reference}:{item.line_start}-{item.line_end}"
+                        ),
+                        reason=item.reason,
+                        line_start=item.line_start,
+                        line_end=item.line_end,
+                    ),
+                )
+                for item in source.observations
+            ),
+            key=lambda item: item.id,
+        )
+    )
     document = LineageDocument(
         name=name,
         source_kind=source.source_kind,
@@ -146,6 +207,8 @@ def build_lineage(name: str, source: LineageInput) -> LineageDocument:
         workflow_name=source.workflow_name,
         definitions=definitions,
         steps=steps,
+        claims=claims,
+        materializations=materializations,
     )
     validate_lineage_document(document)
     return document
@@ -191,11 +254,14 @@ def apply_lineage_proposal(
     )
     _reject_duplicates(proposed_claims, proposed_units, excluded)
     _validate_write_coverage(definition, proposed_units, excluded)
+    replaceable_claims = tuple(
+        item for item in document.claims if item.evidence.source != "declared_reference"
+    )
     if any(
         item.definition_id == definition_id
         and item.reviews
         and item.state != "review_required"
-        for item in (*document.claims, *document.write_units)
+        for item in (*replaceable_claims, *document.write_units)
     ):
         raise LineageFailure(
             "reviewed_lineage_item",
@@ -212,8 +278,22 @@ def apply_lineage_proposal(
             excluded_writes=excluded,
         )
     )
-    claims = [item for item in document.claims if item.definition_id != definition_id]
-    claims.extend(proposed_claims)
+    claims = [
+        item
+        for item in document.claims
+        if item.definition_id != definition_id
+        or item.evidence.source == "declared_reference"
+    ]
+    declared_keys = {
+        (item.operation.casefold(), item.target.casefold())
+        for item in claims
+        if item.definition_id == definition_id and item.evidence.source == "declared_reference"
+    }
+    claims.extend(
+        item
+        for item in proposed_claims
+        if (item.operation.casefold(), item.target.casefold()) not in declared_keys
+    )
     write_units = [item for item in document.write_units if item.definition_id != definition_id]
     write_units.extend(proposed_units)
     updated = replace(
@@ -307,6 +387,30 @@ def table_lineage(document: LineageDocument) -> tuple[TableLineage, ...]:
         if unit.state != "rejected"
         for source in unit.sources
     }
+    result.update(
+        TableLineage(
+            source=claim.target,
+            target=materialization.target,
+            via_definition=definitions[materialization.definition_id].qualified_name,
+            state=(
+                "review_required"
+                if "review_required" in {claim.state, materialization.state}
+                else "draft"
+                if "draft" in {claim.state, materialization.state}
+                else "validated"
+            ),
+            write_unit_id=materialization.id,
+            role="unknown",
+            via=(),
+            derivation="declared_materialization",
+        )
+        for materialization in document.materializations
+        if materialization.state != "rejected"
+        for claim in document.claims
+        if claim.definition_id == materialization.definition_id
+        and claim.operation == "read"
+        and claim.state != "rejected"
+    )
     return tuple(
         sorted(
             result,

@@ -8,6 +8,9 @@ const state = {
   objectKind: "all",
   reviewFilter: "pending",
   canvasMode: "space",
+  focusNames: null,
+  focusSelection: null,
+  focusSelectedOnly: false,
   scopeFilters: null,
   trace: null,
   traceOnCanvas: false,
@@ -32,10 +35,14 @@ async function api(path, payload) {
 async function load() {
   setFooter("Loading local artifacts…");
   state.data = await api("/api/bootstrap");
+  if (state.focusNames === null) {
+    state.focusSelection = state.data.focus_selection;
+    state.focusNames = new Set(state.focusSelection?.focuses || []);
+  }
   initializeScopeFilters();
   const params = new URLSearchParams(window.location.search);
   if (params.get("mode") === "lineage") state.canvasMode = "lineage";
-  if (!state.selectedId && state.data.objects.length) state.selectedId = mostConnectedObject();
+  if (!state.selectedId && state.data.objects.length) state.selectedId = defaultVisibleObject();
   if (!state.reviewId) state.reviewId = nextReview()?.id || null;
   renderAll();
   $$('[data-canvas-mode]').forEach(button => button.classList.toggle("is-active", button.dataset.canvasMode === state.canvasMode));
@@ -56,6 +63,7 @@ function renderAll() {
   $("#mode").className = `mode-badge${data.editable ? " edit" : ""}`;
   $("#review-badge").textContent = String(data.review.filter(item => ["draft", "review_required", "deferred"].includes(item.state)).length);
   renderObjectList();
+  renderFocuses();
   renderScopeFilters();
   renderGraph();
   renderInspector();
@@ -70,16 +78,77 @@ function renderObjectList() {
     (state.objectKind === "all" || item.type === state.objectKind) &&
     (!needle || item.label.toLowerCase().includes(needle) || annotationText(item).includes(needle))
   );
-  $("#object-list").innerHTML = objects.map(item => `
+  $("#object-list").innerHTML = objects.map(item => {
+    const memberships = focusMembership(item.id);
+    return `
     <button class="object-row${item.id === state.selectedId ? " is-active" : ""}" data-object="${escapeAttr(item.id)}" draggable="true">
       <span class="kind-icon">${item.type === "view" ? "V" : "T"}</span>
-      <span class="object-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.graph)} · ${escapeHtml(item.namespace)} · ${item.fields.length} fields</small></span>
+      <span class="object-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.graph)} · ${escapeHtml(item.namespace)} · ${item.fields.length} fields${memberships.length ? ` · ${memberships.length} focus${memberships.length === 1 ? "" : "es"}` : ""}</small></span>
       <i class="state-dot ${escapeAttr(item.annotation?.state || "missing")}" title="${escapeAttr(item.annotation?.state || "missing")}"></i>
-    </button>`).join("") || '<div class="empty-state"><p>No matching objects.</p></div>';
+    </button>`;
+  }).join("") || '<div class="empty-state"><p>No matching objects.</p></div>';
   $$(".object-row").forEach(row => {
     row.addEventListener("click", () => selectObject(row.dataset.object));
     row.addEventListener("dragstart", event => event.dataTransfer.setData("text/tarel-object", row.dataset.object));
   });
+}
+
+function renderFocuses() {
+  const catalog = state.data.focuses || [];
+  const needle = $("#focus-search").value.trim().toLowerCase();
+  const visible = catalog.filter(item =>
+    (!state.focusSelectedOnly || state.focusNames.has(item.name)) &&
+    (!needle || `${item.name} ${item.seed} ${item.sources.join(" ")}`.toLowerCase().includes(needle))
+  );
+  $("#focus-list").innerHTML = visible.map(item => `
+    <label class="focus-row${item.current ? "" : " is-stale"}" title="${escapeAttr(item.stale_reason || item.seed)}">
+      <input type="checkbox" data-focus-name="${escapeAttr(item.name)}" ${state.focusNames.has(item.name) ? "checked" : ""} ${item.current ? "" : "disabled"} />
+      <span><strong>${escapeHtml(item.name)}</strong><small>${item.current ? `${item.graph_objects} graph objects · ${item.origins} origins` : "Stale · rebuild required"}</small></span>
+      ${item.truncated || !item.current ? `<i class="focus-warning" title="${escapeAttr(item.stale_reason || "Truncated focus")}">!</i>` : ""}
+    </label>`).join("") || '<div class="empty-state compact"><p>No matching focuses.</p></div>';
+  $$('[data-focus-name]').forEach(input => input.addEventListener("change", () => {
+    input.checked ? state.focusNames.add(input.dataset.focusName) : state.focusNames.delete(input.dataset.focusName);
+    if (state.focusSelectedOnly) renderFocuses();
+    else $("#focus-count").textContent = `${state.focusNames.size}/${catalog.length}`;
+  }));
+  $("#focus-count").textContent = `${state.focusNames.size}/${catalog.length}`;
+  const selection = state.focusSelection;
+  $("#focus-summary").innerHTML = selection?.focuses.length ? `
+    <strong>${selection.focuses.length} active focus${selection.focuses.length === 1 ? "" : "es"}</strong>
+    <span>${selection.object_ids.length} graph objects · ${selection.members.length} assets · ${selection.origins.length} origins</span>
+    ${selection.warnings.length ? `<small title="${escapeAttr(selection.warnings.join(" · "))}">⚠ ${selection.warnings.length} lineage warning${selection.warnings.length === 1 ? "" : "s"}</small>` : ""}` :
+    '<span>Full workspace visible. Select one or more report paths to narrow the estate.</span>';
+}
+
+async function applyFocuses() {
+  try {
+    setFooter("Loading selected focuses…");
+    state.focusSelection = await api("/api/focus/select", {focuses: [...state.focusNames].sort()});
+    state.trace = null;
+    state.traceOnCanvas = false;
+    const visible = visibleObjects();
+    state.selectedId = visible.some(item => item.id === state.selectedId)
+      ? state.selectedId
+      : defaultVisibleObject();
+    renderAll();
+    setFooter("Ready");
+  } catch (error) {
+    setFooter("Focus failed");
+    toast(error.message);
+  }
+}
+
+function clearFocuses() {
+  state.focusNames.clear();
+  state.focusSelection = null;
+  state.trace = null;
+  state.traceOnCanvas = false;
+  state.selectedId = mostConnectedObject();
+  renderAll();
+}
+
+function focusMembership(id) {
+  return state.focusSelection?.members.find(item => item.id === id)?.focuses || [];
 }
 
 function initializeScopeFilters() {
@@ -136,7 +205,11 @@ function applyVisualScope() {
 
 function visibleObjects() {
   const zoneNarrowed = state.scopeFilters.zones.size < state.scopeFacets.zones.length;
+  const focusObjects = state.focusSelection?.focuses.length
+    ? new Set(state.focusSelection.object_ids)
+    : null;
   return state.data.objects.filter(item =>
+    (!focusObjects || focusObjects.has(item.id)) &&
     (!item.system || state.scopeFilters.systems.has(item.system)) &&
     (!item.area_ref || state.scopeFilters.areas.has(item.area_ref)) &&
     state.scopeFilters.graphs.has(item.graph) &&
@@ -173,7 +246,7 @@ function renderGraph() {
   if (state.cy) state.cy.destroy();
   state.cy = cytoscape({
     container: $("#graph-canvas"), elements,
-    layout: state.canvasMode === "space" ? {name: "preset", fit: true, padding: 75} : {name: "breadthfirst", directed: true, fit: true, padding: 75, spacingFactor: 1.25, animate: !state.traceOnCanvas, animationDuration: 260},
+    layout: state.canvasMode === "space" ? {name: "preset", fit: true, padding: 75} : {name: "breadthfirst", directed: true, fit: true, padding: 115, spacingFactor: 1.25, animate: !state.traceOnCanvas, animationDuration: 260},
     minZoom: .15, maxZoom: 2.3, wheelSensitivity: .18,
     style: [
       {selector: "node", style: {"background-color": "#181818", "border-color": "#4a4a4a", "border-width": 1, "color": "#ddd", "font-family": "Inter, sans-serif", "font-size": 10, "label": "data(label)", "shape": "round-rectangle", "text-max-width": 104, "text-wrap": "ellipsis", "text-valign": "center", "width": 112, "height": 42}},
@@ -207,16 +280,19 @@ function renderGraph() {
   });
   if (state.selectedId && state.cy.$id(state.selectedId).length) state.cy.$id(state.selectedId).select();
   if (state.traceOnCanvas && state.trace) setTimeout(focusTrace, 0);
-  $("#canvas-title").textContent = state.canvasMode === "space" ? "Information space" : "Data & process lineage";
+  const focusCount = state.focusSelection?.focuses.length || 0;
+  $("#canvas-title").textContent = focusCount
+    ? `Focus · ${focusCount} report${focusCount === 1 ? "" : "s"}`
+    : state.canvasMode === "space" ? "Information space" : "Data & process lineage";
   $("#canvas-subtitle").textContent = state.canvasMode === "space"
     ? `${objects.length} objects · ${data.edges.filter(edge => objectIds.has(edge.source) && objectIds.has(edge.target)).length} relationships · ${lanes.length} schema spaces`
-    : `${objects.length} graph objects · ${data.lineage_flows.edges.length} lineage edges · ${data.lineages.length} documents`;
+    : `${objects.length} graph objects · ${activeLineageFlows().edges.length} lineage edges${focusCount ? ` · ${state.focusSelection.origins.length} origins` : ` · ${data.lineages.length} documents`}`;
 }
 
 function lineageObjectIds() {
   const objectIds = new Set(state.data.objects.map(item => item.id));
   const connected = new Set();
-  for (const edge of state.data.lineage_flows?.edges || []) {
+  for (const edge of activeLineageFlows().edges) {
     if (objectIds.has(edge.source)) connected.add(edge.source);
     if (objectIds.has(edge.target)) connected.add(edge.target);
   }
@@ -253,7 +329,7 @@ function spaceGroupElements(objects) {
 }
 
 function lineageElements(visibleObjectIds) {
-  const flows = state.data.lineage_flows || {nodes: [], edges: []};
+  const flows = activeLineageFlows();
   const trace = state.traceOnCanvas && state.trace ? traceElements(state.trace) : {nodes: [], edges: []};
   const allEdges = [...flows.edges.map(item => ({...item, type: item.type || "lineage"})), ...trace.edges];
   const connected = new Set();
@@ -261,12 +337,28 @@ function lineageElements(visibleObjectIds) {
   const nodes = [...flows.nodes, ...trace.nodes]
     .filter((item, index, values) => values.findIndex(candidate => candidate.id === item.id) === index)
     .filter(item => connected.has(item.id))
+    .filter(item => !visibleObjectIds.has(item.id))
     .map(item => ({data: {id: item.id, label: item.label || item.reference, reference: item.reference, type: item.kind || "asset", state: item.state || "observed"}}));
   const known = new Set([...visibleObjectIds, ...nodes.map(item => item.data.id)]);
   const edges = allEdges
     .filter(item => known.has(item.source) && known.has(item.target))
     .map(item => ({data: {id: item.id, source: item.source, target: item.target, type: item.type, state: item.state, relation: item.relation}}));
   return [...nodes, ...edges];
+}
+
+function activeLineageFlows() {
+  const selection = state.focusSelection;
+  if (!selection?.focuses.length) return state.data.lineage_flows || {nodes: [], edges: []};
+  return {
+    edges: selection.edges,
+    nodes: selection.members.map(item => ({
+      id: item.id,
+      kind: item.kind,
+      label: item.label,
+      reference: item.reference,
+      state: item.annotation_state || "observed",
+    })),
+  };
 }
 
 function traceElements(trace) {
@@ -424,7 +516,7 @@ function renderReviewEditor() {
   $("#review-editor").innerHTML = `
     <div class="review-title"><div><p class="eyebrow">${escapeHtml(record.type)} annotation</p><h2>${escapeHtml(record.label)}</h2><p>${record.field_count} fields · ${stateLabel(record.state)}</p></div><span class="state-badge">${stateLabel(record.state)}</span></div>
     <div class="step-strip"><div class="step"><strong>1 · Read</strong>Understand the proposal</div><div class="step"><strong>2 · Check</strong>Compare evidence</div><div class="step"><strong>3 · Edit</strong>Correct meaning</div><div class="step"><strong>4 · Decide</strong>Approve or reject</div></div>
-    ${!annotation ? `<div class="missing-callout"><strong>No provider proposal exists for this table.</strong><p>Generate one with the configured provider or coding agent, then return here for review.</p><code>tarel annotation next ${escapeHtml(state.data.graph)} --samples 10</code></div>` : `
+    ${!annotation ? `<div class="missing-callout"><strong>No provider proposal exists for this table.</strong><p>Generate one with the configured provider or coding agent, then return here for review. Add a private connector configuration and sampling only when required.</p><code>${escapeHtml(annotationCommand(record))}</code></div>` : `
     <form id="annotation-form" class="editor-form">
       <label><span>Business description</span><textarea name="description" required ${disabled ? "disabled" : ""}>${escapeHtml(annotation.description)}</textarea></label>
       <div class="field-grid"><label><span>Business role</span><input name="role" value="${escapeAttr(annotation.role || "")}" ${disabled ? "disabled" : ""} /></label><label><span>Grain</span><input name="grain" value="${escapeAttr(record.grain || "")}" ${disabled ? "disabled" : ""} /></label></div>
@@ -609,12 +701,28 @@ function switchView(view) {
 }
 
 function fact(label, value) { return `<div class="fact"><small>${escapeHtml(label)}</small><strong>${escapeHtml(value)}</strong></div>`; }
-function mostConnectedObject() {
-  const degree = new Map(state.data.objects.map(item => [item.id, 0]));
-  state.data.edges.forEach(edge => { degree.set(edge.source, (degree.get(edge.source) || 0) + 1); degree.set(edge.target, (degree.get(edge.target) || 0) + 1); });
-  return [...degree].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] || state.data.objects[0]?.id;
+function defaultVisibleObject() {
+  const objectIds = new Set(state.focusSelection?.object_ids || []);
+  const focusMember = state.focusSelection?.members
+    .filter(item => objectIds.has(item.id))
+    .sort((left, right) => left.depth - right.depth || left.reference.localeCompare(right.reference))[0];
+  return focusMember?.id || mostConnectedObject(visibleObjects());
+}
+function mostConnectedObject(objects = state.data.objects) {
+  const allowed = new Set(objects.map(item => item.id));
+  const degree = new Map(objects.map(item => [item.id, 0]));
+  state.data.edges
+    .filter(edge => allowed.has(edge.source) && allowed.has(edge.target))
+    .forEach(edge => { degree.set(edge.source, (degree.get(edge.source) || 0) + 1); degree.set(edge.target, (degree.get(edge.target) || 0) + 1); });
+  return [...degree].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] || objects[0]?.id;
 }
 function annotationText(item) { return `${item.annotation?.description || ""} ${(item.annotation?.synonyms || []).join(" ")}`.toLowerCase(); }
+function annotationCommand(record) {
+  const focus = focusMembership(record.id)[0];
+  const scope = focus ? `--focus ${shellArg(focus)}` : shellArg(record.graph);
+  return `tarel annotation next ${scope} --object ${shellArg(record.label)}`;
+}
+function shellArg(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function stateLabel(value) { return ({draft: "Draft", review_required: "Review required", deferred: "Deferred", validated: "Approved", rejected: "Removed", missing: "Missing"})[value] || value; }
 function lines(value) { return String(value || "").split("\n").map(item => item.trim()).filter(Boolean); }
 function emptyToNull(value) { const clean = String(value || "").trim(); return clean || null; }
@@ -625,6 +733,13 @@ function setFooter(value) { $("#footer-status").textContent = value; }
 function toast(value) { const element = $("#toast"); element.textContent = value; element.hidden = false; clearTimeout(toast.timer); toast.timer = setTimeout(() => { element.hidden = true; }, 4200); }
 
 $("#object-search").addEventListener("input", renderObjectList);
+$("#focus-search").addEventListener("input", renderFocuses);
+$("#focus-selected-only").addEventListener("change", event => {
+  state.focusSelectedOnly = event.target.checked;
+  renderFocuses();
+});
+$("#apply-focuses").addEventListener("click", applyFocuses);
+$("#clear-focuses").addEventListener("click", clearFocuses);
 $$('[data-kind]').forEach(button => button.addEventListener("click", () => { state.objectKind = button.dataset.kind; $$('[data-kind]').forEach(item => item.classList.toggle("is-active", item === button)); renderObjectList(); }));
 $$('.tab').forEach(button => button.addEventListener("click", () => switchView(button.dataset.view)));
 $$('.review-filter').forEach(button => button.addEventListener("click", () => { state.reviewFilter = button.dataset.reviewFilter; $$('.review-filter').forEach(item => item.classList.toggle("is-active", item === button)); renderReview(); }));

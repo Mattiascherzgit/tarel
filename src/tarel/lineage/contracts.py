@@ -5,8 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-_CONTRACT_VERSION = "tarel.lineage.v0.3"
-_READABLE_CONTRACT_VERSIONS = frozenset({_CONTRACT_VERSION, "tarel.lineage.v0.2"})
+_CONTRACT_VERSION = "tarel.lineage.v0.4"
+_READABLE_CONTRACT_VERSIONS = frozenset(
+    {_CONTRACT_VERSION, "tarel.lineage.v0.3", "tarel.lineage.v0.2"}
+)
 _DEFINITION_KINDS = frozenset({"procedure", "query", "script"})
 _OPERATIONS = frozenset({"call", "read"})
 _WRITE_OPERATIONS = frozenset({"delete", "insert", "merge", "select_into", "truncate", "update"})
@@ -15,6 +17,7 @@ _SOURCE_ROLES = frozenset(
 )
 _EXCLUSION_KINDS = frozenset({"dynamic_sql", "local_intermediate", "unresolved"})
 _STATES = frozenset({"draft", "rejected", "review_required", "validated"})
+_MATERIALIZATION_MODES = frozenset({"incremental", "table", "view"})
 
 
 class LineageFailure(RuntimeError):
@@ -212,6 +215,28 @@ class LineageWriteUnit:
 
 
 @dataclass(frozen=True, slots=True)
+class LineageMaterialization:
+    id: str
+    definition_id: str
+    target: str
+    mode: str
+    state: str
+    evidence: LineageEvidence
+    reviews: tuple[LineageReview, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "definition_id": self.definition_id,
+            "evidence": self.evidence.to_dict(),
+            "id": self.id,
+            "mode": self.mode,
+            "reviews": [item.to_dict() for item in self.reviews],
+            "state": self.state,
+            "target": self.target,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class LineageDocument:
     name: str
     source_kind: str
@@ -226,6 +251,7 @@ class LineageDocument:
     analysis_failures: tuple[LineageAnalysisFailure, ...] = ()
     claims: tuple[LineageClaim, ...] = ()
     write_units: tuple[LineageWriteUnit, ...] = ()
+    materializations: tuple[LineageMaterialization, ...] = ()
     contract_version: str = _CONTRACT_VERSION
 
     def definition_by_id(self) -> dict[str, LineageDefinition]:
@@ -241,6 +267,7 @@ class LineageDocument:
             "claims": [item.to_dict() for item in self.claims],
             "contract_version": self.contract_version,
             "definitions": [item.to_dict() for item in self.definitions],
+            "materializations": [item.to_dict() for item in self.materializations],
             "name": self.name,
             "source_kind": self.source_kind,
             "source_name": self.source_name,
@@ -259,6 +286,8 @@ class LineageDocument:
             raise LineageFailure("unsupported_lineage", "Unsupported TAREL lineage contract.")
         if contract_version == "tarel.lineage.v0.2":
             data = {**data, "analysis_failures": []}
+        if contract_version in {"tarel.lineage.v0.2", "tarel.lineage.v0.3"}:
+            data = {**data, "materializations": []}
         _fields(
             data,
             {
@@ -267,6 +296,7 @@ class LineageDocument:
                 "claims",
                 "contract_version",
                 "definitions",
+                "materializations",
                 "name",
                 "source_kind",
                 "source_name",
@@ -290,6 +320,10 @@ class LineageDocument:
                 workflow_name=_text_value(data.get("workflow_name"), "workflow_name"),
                 definitions=tuple(
                     _definition(item) for item in _objects(data.get("definitions"), "definitions")
+                ),
+                materializations=tuple(
+                    _materialization(item)
+                    for item in _objects(data.get("materializations"), "materializations")
                 ),
                 steps=tuple(_step(item) for item in _objects(data.get("steps"), "steps")),
                 analyses=tuple(
@@ -450,6 +484,34 @@ def validate_lineage_document(document: LineageDocument) -> None:
         claim_ids.append(item.id)
     _unique(claim_ids, "claim IDs")
 
+    materialization_ids: list[str] = []
+    materialized_definitions: list[str] = []
+    for item in document.materializations:
+        for value, label in (
+            (item.id, "materialization id"),
+            (item.definition_id, "materialization definition_id"),
+            (item.target, "materialization target"),
+            (item.mode, "materialization mode"),
+            (item.state, "materialization state"),
+        ):
+            _text_value(value, label)
+        if item.definition_id not in definitions:
+            raise LineageFailure(
+                "invalid_lineage",
+                "Materialization references an unknown definition.",
+            )
+        if item.mode not in _MATERIALIZATION_MODES or item.state not in _STATES:
+            raise LineageFailure(
+                "invalid_lineage",
+                "Unsupported materialization mode or state.",
+            )
+        _validate_evidence(item.evidence)
+        _validate_reviews(item.state, item.reviews, "materialization")
+        materialization_ids.append(item.id)
+        materialized_definitions.append(item.definition_id)
+    _unique(materialization_ids, "materialization IDs")
+    _unique(materialized_definitions, "materialized definition IDs")
+
     write_unit_ids: list[str] = []
     for item in document.write_units:
         for value, label in (
@@ -564,6 +626,23 @@ def _claim(data: dict[str, Any]) -> LineageClaim:
         **values,
         evidence=_evidence(data.get("evidence"), "claim evidence"),
         reviews=reviews,
+    )
+
+
+def _materialization(data: dict[str, Any]) -> LineageMaterialization:
+    _fields(
+        data,
+        {"definition_id", "evidence", "id", "mode", "reviews", "state", "target"},
+        "materialization",
+    )
+    values = {key: value for key, value in data.items() if key not in {"evidence", "reviews"}}
+    return LineageMaterialization(
+        **values,
+        evidence=_evidence(data.get("evidence"), "materialization evidence"),
+        reviews=tuple(
+            _review(item)
+            for item in _objects(data.get("reviews"), "materialization reviews")
+        ),
     )
 
 

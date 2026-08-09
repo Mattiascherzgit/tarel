@@ -277,7 +277,7 @@ class LineageOperationsTests(TestCase):
         migrated = LineageDocument.from_dict(payload)
 
         self.assertEqual(migrated.analysis_failures, ())
-        self.assertEqual(migrated.contract_version, "tarel.lineage.v0.3")
+        self.assertEqual(migrated.contract_version, "tarel.lineage.v0.4")
 
 
 def _source(content: str | None = None) -> LineageInput:

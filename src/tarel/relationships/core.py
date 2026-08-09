@@ -73,6 +73,7 @@ def candidate_pairs(
     object_reference: str,
     field_name: str | None,
     max_pairs: int,
+    allowed_object_ids: frozenset[str] | None = None,
 ) -> tuple[RelationshipPair, ...]:
     if not 1 <= max_pairs <= 50:
         raise RelationshipFailure(
@@ -80,6 +81,11 @@ def candidate_pairs(
             "Relationship discovery pair budget must be between 1 and 50.",
         )
     source_object = resolve_object(graph, object_reference)
+    if allowed_object_ids is not None and source_object.id not in allowed_object_ids:
+        raise RelationshipFailure(
+            "object_outside_focus",
+            f"Object is outside the selected focus: {source_object.label}",
+        )
     fields_by_object = _fields_by_object(graph)
     source_fields = fields_by_object.get(source_object.id, [])
     if field_name:
@@ -96,6 +102,8 @@ def candidate_pairs(
     target_fields = [
         field
         for object_node in _object_nodes(graph)
+        if object_node.id != source_object.id
+        if allowed_object_ids is None or object_node.id in allowed_object_ids
         for field in fields_by_object.get(object_node.id, [])
         if bool(field.metadata.get("is_primary_key")) or _field_position(field) == 1
     ]

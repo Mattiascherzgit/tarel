@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from tarel.annotations.apply import apply_annotation_proposal
 from tarel.annotations.contracts import (
+    AnnotationFailure,
     AnnotationProposalEnvelope,
     AnnotationRunResult,
     AnnotationTask,
@@ -57,12 +58,23 @@ from tarel.context_packets import (
     load_context_packet,
 )
 from tarel.demo import DemoCreateResult, DemoFailure, create_retail_demo
+from tarel.focus.contracts import FocusDocument, FocusFailure
+from tarel.focus.core import (
+    build_focus,
+    expand_graph_objects_one_hop,
+    graph_object_ids,
+    require_current_focus,
+)
+from tarel.focus.store import FileFocusStore
 from tarel.graph.build import build_graph_from_catalog
 from tarel.graph.change_store import FileGraphChangeStore
 from tarel.graph.contracts import GraphDocument, GraphEdge
 from tarel.graph.refresh import GraphRefreshReport, refresh_graph
 from tarel.graph.revision import graph_revision
 from tarel.graph.store import FileGraphStore
+from tarel.lineage.contracts import LineageDocument
+from tarel.lineage.store import FileLineageStore
+from tarel.lineage.traversal import DEFAULT_LINEAGE_STATES, trace_upstream
 from tarel.providers.authoring import ProviderScaffoldResult, scaffold_provider
 from tarel.providers.config import (
     BUILTIN_PROVIDER_ADAPTERS,
@@ -187,6 +199,12 @@ class WorkspaceRelationshipChangeResult:
     workspace: WorkspaceDocument
     path: Path
     relationship: WorkspaceRelationship
+
+
+@dataclass(frozen=True, slots=True)
+class FocusBuildResult:
+    focus: FocusDocument
+    path: Path
 
 
 def create_demo_use_case(
@@ -452,6 +470,53 @@ def list_graphs_use_case() -> tuple[str, ...]:
 
 def load_graph_use_case(name: str) -> GraphDocument:
     return FileGraphStore().load(name)
+
+
+def build_focus_use_case(
+    name: str,
+    *,
+    seed: str,
+    lineage_names: tuple[str, ...],
+    graph_names: tuple[str, ...],
+    max_hops: int = 12,
+    states: frozenset[str] | None = None,
+) -> FocusBuildResult:
+    if not lineage_names and not graph_names:
+        raise FocusFailure(
+            "missing_focus_sources",
+            "Focus build requires at least one explicit --lineage or --graph source.",
+        )
+    _require_unique_names(lineage_names, "lineage")
+    _require_unique_names(graph_names, "graph")
+    lineage_store = FileLineageStore()
+    graph_store = FileGraphStore()
+    lineages = tuple(lineage_store.load(item) for item in lineage_names)
+    graphs = tuple(graph_store.load(item) for item in graph_names)
+    selected_states = DEFAULT_LINEAGE_STATES if states is None else states
+    trace = trace_upstream(
+        lineages,
+        graphs,
+        seed,
+        max_hops=max_hops,
+        states=selected_states,
+    )
+    focus = build_focus(
+        name,
+        trace,
+        lineages=lineages,
+        graphs=graphs,
+        states=selected_states,
+        max_hops=max_hops,
+    )
+    return FocusBuildResult(focus, FileFocusStore().save(focus))
+
+
+def load_focus_use_case(name: str) -> FocusDocument:
+    return FileFocusStore().load(name)
+
+
+def list_focuses_use_case() -> tuple[str, ...]:
+    return FileFocusStore().list()
 
 
 def create_workspace_use_case(
@@ -1057,14 +1122,34 @@ def discover_relationships_use_case(
     min_overlap_count: int,
     min_target_uniqueness: float,
     persist: bool,
+    focus_name: str | None = None,
+    expand_one_hop: bool = False,
 ) -> RelationshipDiscoveryResult:
+    if expand_one_hop and focus_name is None:
+        raise FocusFailure(
+            "invalid_focus_scope",
+            "--expand-one-hop requires --focus.",
+        )
     store = FileGraphStore()
     graph = store.load(name)
+    allowed_object_ids = None
+    if focus_name is not None:
+        focus, _lineages, focus_graphs = _load_current_focus(focus_name)
+        focus_graph = focus_graphs.get(name)
+        if focus_graph is None:
+            raise FocusFailure(
+                "graph_outside_focus",
+                f"Graph is outside focus {focus_name}: {name}",
+            )
+        allowed_object_ids = graph_object_ids(focus, name)
+        if expand_one_hop:
+            allowed_object_ids = expand_graph_objects_one_hop(graph, allowed_object_ids)
     pairs = candidate_pairs(
         graph,
         object_reference=object_reference,
         field_name=field_name,
         max_pairs=max_pairs,
+        allowed_object_ids=allowed_object_ids,
     )
     if not pairs:
         return RelationshipDiscoveryResult(graph=graph, path=None, profiles=(), candidates=())
@@ -1133,6 +1218,68 @@ def plan_annotations_use_case(
         sample_limit=sample_limit,
         config_path=config_path,
     )
+
+
+def plan_focus_annotations_use_case(
+    focus_name: str,
+    *,
+    namespace: str | None = None,
+    objects: set[str] | None = None,
+    limit: int | None = None,
+    missing_only: bool = True,
+    sample_limit: int = 0,
+    config_path: Path | None = None,
+) -> tuple[AnnotationTask, ...]:
+    if limit is not None and limit < 1:
+        raise AnnotationFailure(
+            "invalid_annotation_limit",
+            "Focus annotation limit must be positive.",
+        )
+    focus, _lineages, graphs = _load_current_focus(focus_name)
+    depths = {item.id: item.depth for item in focus.members}
+    tasks: list[AnnotationTask] = []
+    for graph_name, graph in sorted(graphs.items()):
+        object_ids = graph_object_ids(focus, graph_name)
+        selected_nodes = [
+            item
+            for item in graph.nodes
+            if item.id in object_ids and item.type in {"table", "view"}
+        ]
+        selected_labels = {item.label for item in selected_nodes}
+        if objects:
+            requested = {item.casefold() for item in objects}
+            selected_labels = {
+                item.label
+                for item in selected_nodes
+                if item.label.casefold() in requested
+                or str(item.metadata.get("name", "")).casefold() in requested
+                or f"{graph.catalog}.{item.label}".casefold() in requested
+            }
+        if not selected_labels:
+            continue
+        tasks.extend(
+            _plan_graph_annotations(
+                graph,
+                namespace=namespace,
+                objects=selected_labels,
+                limit=None,
+                missing_only=missing_only,
+                sample_limit=sample_limit,
+                config_path=config_path,
+            )
+        )
+    ordered = tuple(
+        sorted(
+            tasks,
+            key=lambda item: (
+                depths.get(f"graph:{item.graph_name}:{item.target_id}", focus.max_hops + 1),
+                item.graph_name,
+                item.target_label.casefold(),
+                item.target_id,
+            ),
+        )
+    )
+    return ordered[:limit] if limit is not None else ordered
 
 
 def apply_annotation_use_case(
@@ -1356,3 +1503,45 @@ def _optional_string(value: Any) -> str | None:
     if not isinstance(value, str):
         raise ConnectorFailure("invalid_config", "default_database must be a string.")
     return value.strip() or None
+
+
+def _load_current_focus(
+    name: str,
+) -> tuple[FocusDocument, dict[str, LineageDocument], dict[str, GraphDocument]]:
+    focus = FileFocusStore().load(name)
+    lineage_store = FileLineageStore()
+    graph_store = FileGraphStore()
+    available_lineages = set(lineage_store.list())
+    available_graphs = set(graph_store.list())
+    missing = [
+        item
+        for item in focus.sources
+        if (item.kind == "lineage" and item.name not in available_lineages)
+        or (item.kind == "graph" and item.name not in available_graphs)
+    ]
+    if missing:
+        rendered = ", ".join(f"{item.kind}:{item.name}" for item in missing)
+        raise FocusFailure(
+            "focus_stale",
+            f"Focus {name} references missing sources: {rendered}",
+        )
+    lineages = {
+        item.name: lineage_store.load(item.name)
+        for item in focus.sources
+        if item.kind == "lineage"
+    }
+    graphs = {
+        item.name: graph_store.load(item.name)
+        for item in focus.sources
+        if item.kind == "graph"
+    }
+    require_current_focus(focus, lineages=lineages, graphs=graphs)
+    return focus, lineages, graphs
+
+
+def _require_unique_names(names: tuple[str, ...], label: str) -> None:
+    if len(names) != len(set(names)):
+        raise FocusFailure(
+            "duplicate_focus_source",
+            f"Focus {label} sources must not contain duplicates.",
+        )

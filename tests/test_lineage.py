@@ -12,10 +12,13 @@ from tarel.cli import main
 from tarel.lineage.contracts import LineageDocument, LineageFailure
 from tarel.lineage.core import apply_lineage_proposal, build_lineage, process_view, table_lineage
 from tarel.lineage.coverage import write_markers
+from tarel.lineage.refresh import refresh_lineage
 from tarel.lineage.review import decide_lineage_item
 from tarel.lineage.source import (
     LineageInput,
     SourceDefinition,
+    SourceMaterialization,
+    SourceObservation,
     SourceStep,
     load_lineage_input,
 )
@@ -105,6 +108,86 @@ UPDATE target_alias SET value = 1 FROM #Stage AS target_alias;
                 ["Stage Internet Sales", "Load Annual Product Sales"],
             )
             self.assertEqual(len(plan_lineage_tasks(document, exported)), 2)
+
+    def test_declared_materialization_is_reviewable_and_creates_table_lineage(self) -> None:
+        definition = SourceDefinition(
+            external_id="model.sales",
+            kind="query",
+            name="sales",
+            qualified_name="dbt.model.sales",
+            language="sql",
+            content="select * from raw.Sales",
+            source_reference="dbt/target/manifest.json:model.sales",
+        )
+        source = LineageInput(
+            source_kind="dbt",
+            source_name="Demo project",
+            source_reference="dbt/target/manifest.json",
+            workflow_external_id="dbt-demo",
+            workflow_name="dbt demo",
+            definitions=(definition,),
+            steps=(SourceStep("model.sales", "sales", definition.external_id, ()),),
+            materializations=(
+                SourceMaterialization(
+                    definition_external_id=definition.external_id,
+                    target="Demo.mart.Sales",
+                    mode="table",
+                    source_reference="dbt/target/manifest.json:model.sales",
+                ),
+            ),
+            observations=(
+                SourceObservation(
+                    definition_external_id=definition.external_id,
+                    operation="read",
+                    target="Demo.raw.Sales",
+                    source_reference="dbt/target/manifest.json:model.sales",
+                    reason="The manifest declares this upstream dependency.",
+                    line_start=1,
+                    line_end=1,
+                ),
+            ),
+        )
+        document = build_lineage("dbt-demo", source)
+
+        rows = table_lineage(document)
+        reviewed, item = decide_lineage_item(
+            document,
+            document.materializations[0].id,
+            decision="validate",
+            reason="Checked against the dbt manifest.",
+        )
+
+        self.assertEqual(len(document.materializations), 1)
+        self.assertEqual(document.claims[0].evidence.source, "declared_reference")
+        self.assertEqual(document.materializations[0].evidence.source, "declared_materialization")
+        self.assertEqual(rows[0].source, "Demo.raw.Sales")
+        self.assertEqual(rows[0].target, "Demo.mart.Sales")
+        self.assertEqual(rows[0].derivation, "declared_materialization")
+        self.assertEqual(item.state, "validated")
+        self.assertEqual(reviewed.materializations[0].reviews[-1].source, "human")
+
+        reviewed, _ = decide_lineage_item(
+            reviewed,
+            reviewed.claims[0].id,
+            decision="validate",
+            reason="Checked against the declared dependency.",
+        )
+        changed = replace(
+            source,
+            materializations=(
+                replace(source.materializations[0], target="Demo.mart.SalesV2"),
+            ),
+            observations=(),
+        )
+        refreshed, report = refresh_lineage(reviewed, changed)
+
+        self.assertEqual(refreshed.claims, ())
+        self.assertEqual(refreshed.materializations[0].state, "review_required")
+        self.assertEqual(refreshed.materializations[0].reviews[-1].decision, "validate")
+        self.assertIn("declared_reference_removed", {item.kind for item in report.changes})
+        self.assertIn("materialization_changed", {item.kind for item in report.changes})
+        stale_claim = next(item for item in report.stale_items if item.item_type == "claim")
+        self.assertEqual(stale_claim.previous_state, "validated")
 
     def test_apply_requires_evidence_and_complete_write_coverage(self) -> None:
         source = load_lineage_input(_FIXTURE)

@@ -22,12 +22,16 @@ from tarel.application import (
     define_workspace_system_use_case,
     define_workspace_zone_use_case,
     edit_annotation_use_case,
+    list_focuses_use_case,
     list_workspaces_use_case,
+    load_focus_use_case,
     load_graph_use_case,
     load_workspace_use_case,
     resolve_workspace_scope_use_case,
 )
-from tarel.graph.contracts import GraphFailure
+from tarel.focus.contracts import FocusDocument, FocusFailure
+from tarel.focus.core import require_current_focus
+from tarel.graph.contracts import GraphDocument, GraphFailure
 from tarel.graph.revision import graph_revision
 from tarel.lineage.application import (
     add_manual_hop_use_case,
@@ -36,10 +40,12 @@ from tarel.lineage.application import (
     load_lineage_use_case,
     trace_upstream_use_case,
 )
-from tarel.lineage.contracts import LineageFailure
+from tarel.lineage.contracts import LineageDocument, LineageFailure
 from tarel.lineage.revision import lineage_revision
 from tarel.relationships.core import RelationshipFailure
 from tarel.ui.presentation import (
+    browser_focus_catalog,
+    browser_focus_selection,
     browser_graph,
     browser_lineages,
     browser_workspace,
@@ -72,6 +78,7 @@ class UIConfig:
     schemas: tuple[str, ...] = ()
     zones: tuple[str, ...] = ()
     lineages: tuple[str, ...] = ()
+    focuses: tuple[str, ...] = ()
     editable: bool = False
 
 
@@ -79,6 +86,7 @@ class TarelUIBackend:
     def __init__(self, config: UIConfig) -> None:
         self.config = config
         self._lineages = list(config.lineages)
+        self._focus_cache: tuple[FocusDocument, ...] | None = None
 
     def bootstrap(self) -> dict[str, object]:
         documents = tuple(load_lineage_use_case(name) for name in self._lineages)
@@ -86,23 +94,37 @@ class TarelUIBackend:
             workspace = load_workspace_use_case(self.config.workspace)
             scope = self._scope()
             graphs = tuple(load_graph_use_case(name) for name in scope.graph_names)
-            return browser_workspace(
+            payload = browser_workspace(
                 graphs,
                 scope,
                 workspace=workspace,
                 editable=self.config.editable,
                 lineage_documents=documents,
             )
-        graph = load_graph_use_case(self._single_graph())
-        workspaces = tuple(load_workspace_use_case(name) for name in list_workspaces_use_case())
-        return browser_graph(
-            graph,
-            workspaces=workspaces,
-            editable=self.config.editable,
-            lineage_documents=documents,
+        else:
+            graph = load_graph_use_case(self._single_graph())
+            workspaces = tuple(
+                load_workspace_use_case(name) for name in list_workspaces_use_case()
+            )
+            payload = browser_graph(
+                graph,
+                workspaces=workspaces,
+                editable=self.config.editable,
+                lineage_documents=documents,
+            )
+        focus_documents = self._focus_documents()
+        payload["focuses"] = browser_focus_catalog(
+            focus_documents,
+            stale_reasons=self._focus_stale_reasons(focus_documents),
         )
+        payload["focus_selection"] = (
+            self._select_focuses(self.config.focuses) if self.config.focuses else None
+        )
+        return payload
 
     def mutate(self, route: str, payload: dict[str, Any]) -> dict[str, object]:
+        if route == "/api/focus/select":
+            return self._select_focuses(_strings(payload, "focuses"))
         if route == "/api/lineage/upstream":
             names = _strings(payload, "lineages") or tuple(self._lineages)
             if not names:
@@ -201,6 +223,89 @@ class TarelUIBackend:
         if route == "/api/zone/save":
             return self._save_zone(payload)
         raise UIFailure("route_not_found", "Unknown UI API route.", status=404)
+
+    def _focus_documents(self) -> tuple[FocusDocument, ...]:
+        if self._focus_cache is not None:
+            return self._focus_cache
+        graph_names = set(self._graph_names())
+        documents: list[FocusDocument] = []
+        for name in list_focuses_use_case():
+            document = load_focus_use_case(name)
+            required = {item.name for item in document.sources if item.kind == "graph"}
+            if required and required <= graph_names:
+                documents.append(document)
+        self._focus_cache = tuple(documents)
+        return self._focus_cache
+
+    def _select_focuses(self, names: tuple[str, ...]) -> dict[str, object]:
+        if len(names) != len(set(names)):
+            raise UIFailure("duplicate_focus", "Select every focus at most once.")
+        allowed = {item.name: item for item in self._focus_documents()}
+        outside = sorted(set(names) - set(allowed))
+        if outside:
+            raise UIFailure(
+                "focus_outside_scope",
+                f"Focus is outside the UI scope: {', '.join(outside)}",
+            )
+        documents = tuple(allowed[name] for name in names)
+        stale = self._focus_stale_reasons(documents)
+        if stale:
+            name = sorted(stale)[0]
+            raise FocusFailure("focus_stale", stale[name])
+        return browser_focus_selection(documents)
+
+    def _focus_stale_reasons(
+        self,
+        documents: tuple[FocusDocument, ...],
+    ) -> dict[str, str]:
+        graph_names = sorted(
+            {
+                item.name
+                for document in documents
+                for item in document.sources
+                if item.kind == "graph"
+            }
+        )
+        lineage_names = sorted(
+            {
+                item.name
+                for document in documents
+                for item in document.sources
+                if item.kind == "lineage"
+            }
+        )
+        graphs: dict[str, GraphDocument] = {}
+        lineages: dict[str, LineageDocument] = {}
+        missing: dict[tuple[str, str], str] = {}
+        for name in graph_names:
+            try:
+                graphs[name] = load_graph_use_case(name)
+            except GraphFailure:
+                missing[("graph", name)] = f"Missing graph source: {name}"
+        for name in lineage_names:
+            try:
+                lineages[name] = load_lineage_use_case(name)
+            except LineageFailure:
+                missing[("lineage", name)] = f"Missing lineage source: {name}"
+        stale: dict[str, str] = {}
+        for document in documents:
+            missing_reasons = [
+                missing[(item.kind, item.name)]
+                for item in document.sources
+                if (item.kind, item.name) in missing
+            ]
+            if missing_reasons:
+                stale[document.name] = f"Focus {document.name} is stale; {missing_reasons[0]}."
+                continue
+            try:
+                require_current_focus(
+                    document,
+                    lineages=lineages,
+                    graphs=graphs,
+                )
+            except FocusFailure as exc:
+                stale[document.name] = str(exc)
+        return stale
 
     def read(self, route: str) -> dict[str, object]:
         if route == "/api/bootstrap":
@@ -483,6 +588,7 @@ def run_ui(
     schemas: tuple[str, ...] = (),
     zones: tuple[str, ...] = (),
     lineages: tuple[str, ...] = (),
+    focuses: tuple[str, ...] = (),
     editable: bool = False,
     port: int = 0,
     open_browser: bool = True,
@@ -504,6 +610,7 @@ def run_ui(
             schemas=schemas,
             zones=zones,
             lineages=lineages,
+            focuses=focuses,
             editable=editable,
         )
     )
@@ -527,10 +634,15 @@ def run_ui(
 def _ui_failure(exc: Exception) -> UIFailure:
     if isinstance(exc, UIFailure):
         return exc
-    if isinstance(exc, (AnnotationFailure, GraphFailure, LineageFailure,
+    if isinstance(exc, (AnnotationFailure, FocusFailure, GraphFailure, LineageFailure,
                         RelationshipFailure, WorkspaceFailure)):
         code = getattr(exc, "code", "ui_operation_failed")
-        status = 409 if code in {"stale_graph", "stale_lineage", "stale_workspace"} else 400
+        status = 409 if code in {
+            "focus_stale",
+            "stale_graph",
+            "stale_lineage",
+            "stale_workspace",
+        } else 400
         if code.endswith("_not_found"):
             status = 404
         return UIFailure(code, str(exc), status=status)

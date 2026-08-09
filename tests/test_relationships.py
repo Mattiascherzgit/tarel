@@ -12,6 +12,7 @@ from tarel.graph.build import build_graph_from_catalog
 from tarel.graph.contracts import GraphAnnotation
 from tarel.graph.refresh import refresh_graph
 from tarel.relationships.core import (
+    RelationshipFailure,
     add_manual_relationship,
     add_profile_candidates,
     candidate_pairs,
@@ -22,6 +23,43 @@ from tarel.relationships.core import (
 
 
 class RelationshipTests(TestCase):
+    def test_candidate_pairs_can_be_hard_bounded_to_focus_objects(self) -> None:
+        graph = _anonymous_graph()
+        objects = {item.label: item.id for item in graph.nodes if item.type == "table"}
+
+        with self.assertRaises(RelationshipFailure) as raised:
+            candidate_pairs(
+                graph,
+                object_reference="x.A001",
+                field_name="C001",
+                max_pairs=5,
+                allowed_object_ids=frozenset({objects["x.B001"]}),
+            )
+        bounded = candidate_pairs(
+            graph,
+            object_reference="x.A001",
+            field_name="C001",
+            max_pairs=5,
+            allowed_object_ids=frozenset({objects["x.A001"]}),
+        )
+
+        self.assertEqual(raised.exception.code, "object_outside_focus")
+        self.assertEqual(bounded, ())
+
+    def test_candidate_pairs_never_join_an_object_to_itself(self) -> None:
+        graph = _anonymous_graph()
+        source = next(item for item in graph.nodes if item.label == "x.A001")
+
+        pairs = candidate_pairs(
+            graph,
+            object_reference="x.A001",
+            field_name="C002",
+            max_pairs=5,
+            allowed_object_ids=frozenset({source.id}),
+        )
+
+        self.assertEqual(pairs, ())
+
     def test_sqlite_integer_fields_can_form_candidate_pairs(self) -> None:
         graph = _anonymous_graph()
         graph = replace(
@@ -188,7 +226,10 @@ def _anonymous_graph(*, declared_relationship: bool = False):
                     namespace="x",
                     name="A001",
                     kind="table",
-                    fields=(CatalogField("C001", 1, "int", False),),
+                    fields=(
+                        CatalogField("C001", 1, "int", False),
+                        CatalogField("C002", 2, "int", False),
+                    ),
                 ),
                 CatalogObject(
                     namespace="x",
