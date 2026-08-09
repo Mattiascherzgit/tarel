@@ -18,7 +18,14 @@ from tarel.connectors.contracts import (
     SampleResult,
 )
 from tarel.graph.build import build_graph_from_catalog
-from tarel.providers.config import check_openrouter, configure_openrouter, load_openrouter_config
+from tarel.providers.config import (
+    check_openrouter,
+    check_provider,
+    configure_http_provider,
+    configure_openrouter,
+    load_http_provider_config,
+    load_openrouter_config,
+)
 from tarel.providers.contracts import ProviderFailure
 
 
@@ -159,12 +166,86 @@ class AnnotationFlowTests(TestCase):
             expected = Path(temporary_directory) / "tarel/providers/openrouter.toml"
             self.assertEqual(path, expected)
 
+    def test_local_endpoint_profile_is_private_and_needs_no_api_key(self) -> None:
+        with (
+            TemporaryDirectory(dir="/tmp") as temporary_directory,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary_directory}, clear=False),
+        ):
+            path = configure_http_provider(
+                "local",
+                adapter="openai-compatible",
+                api_key=None,
+                model="qwen-local",
+                base_url="http://127.0.0.1:8080/v1",
+                structured_mode="tool",
+                allow_no_api_key=True,
+            )
+            config = load_http_provider_config("local")
+            check = check_provider("local").to_dict()
+
+            self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+            self.assertIsNone(config.api_key)
+            self.assertEqual(config.adapter, "openai-compatible")
+            self.assertEqual(config.structured_mode, "tool")
+            self.assertTrue(check["configured"])
+            self.assertEqual(check["model"], "qwen-local")
+
+    def test_local_profile_cannot_hide_a_remote_endpoint(self) -> None:
+        with (
+            TemporaryDirectory(dir="/tmp") as temporary_directory,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary_directory}, clear=False),
+            self.assertRaisesRegex(ProviderFailure, "loopback endpoint"),
+        ):
+            configure_http_provider(
+                "local",
+                adapter="openai-compatible",
+                api_key=None,
+                model="remote-model",
+                base_url="https://inference.example.test/v1",
+                allow_no_api_key=True,
+            )
+
+    def test_no_api_key_removes_a_previous_local_key(self) -> None:
+        with (
+            TemporaryDirectory(dir="/tmp") as temporary_directory,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary_directory}, clear=False),
+        ):
+            options = {
+                "adapter": "openai-compatible",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "model": "qwen-local",
+            }
+            configure_http_provider("local", api_key="old-secret", **options)
+            path = configure_http_provider(
+                "local",
+                api_key=None,
+                allow_no_api_key=True,
+                **options,
+            )
+
+            self.assertNotIn("old-secret", path.read_text(encoding="utf-8"))
+            self.assertIsNone(load_http_provider_config("local").api_key)
+
+    def test_remote_http_profile_requires_key_unless_explicitly_disabled(self) -> None:
+        with (
+            TemporaryDirectory(dir="/tmp") as temporary_directory,
+            patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary_directory}, clear=False),
+            self.assertRaisesRegex(ProviderFailure, "requires an API key"),
+        ):
+            configure_http_provider(
+                "corporate",
+                adapter="openai-compatible",
+                api_key=None,
+                model="private-model",
+                base_url="https://inference.example.test/v1",
+            )
+
     def test_provider_rejects_unsafe_base_urls_from_cli_and_environment(self) -> None:
         with (
             TemporaryDirectory(dir="/tmp") as temporary_directory,
             patch.dict(os.environ, {"XDG_CONFIG_HOME": temporary_directory}, clear=False),
         ):
-            with self.assertRaisesRegex(ProviderFailure, "HTTPS URL"):
+            with self.assertRaisesRegex(ProviderFailure, "must use HTTPS"):
                 configure_openrouter(
                     api_key="secret-value",
                     model="test/model",

@@ -76,7 +76,7 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
     )
     analyze.add_argument("name")
     analyze.add_argument("--source", required=True, type=Path)
-    analyze.add_argument("--provider", required=True, choices=("openrouter",))
+    analyze.add_argument("--provider", required=True)
     analyze.add_argument("--model")
     analyze.add_argument("--timeout", type=float, default=180.0)
     analyze.add_argument("--retry", type=int, default=1)
@@ -85,7 +85,7 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
     analyze.add_argument("--max-output-tokens", type=int)
     analyze.add_argument(
         "--reasoning-effort",
-        choices=("minimal", "low", "medium", "high", "xhigh"),
+        choices=("none", "minimal", "low", "medium", "high", "xhigh"),
     )
     _format(analyze)
 
@@ -219,7 +219,8 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
         return 0
     if command == "analyze":
         print(
-            "warning: complete source definitions will be sent to the selected provider",
+            f"warning: complete source definitions will be sent to provider profile "
+            f"{args.provider}",
             file=sys.stderr,
         )
         result = run_lineage_provider_use_case(

@@ -7,17 +7,14 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from tarel.providers.config import OpenRouterConfig
+from tarel.providers.config import REASONING_EFFORTS, OpenRouterConfig
 from tarel.providers.contracts import ProviderFailure, StructuredRequest
-
-_REASONING_EFFORTS = frozenset({"minimal", "low", "medium", "high", "xhigh"})
 
 
 class OpenRouterProvider:
-    name = "openrouter"
-
     def __init__(self, config: OpenRouterConfig, *, timeout: float = 120.0) -> None:
         self.config = config
+        self.name = config.name
         self.timeout = timeout
         self.default_model = config.model
 
@@ -44,14 +41,15 @@ class OpenRouterProvider:
                     "OpenRouter completion-token limit must be positive.",
                 )
             payload["max_tokens"] = request.max_output_tokens
-        if request.reasoning_effort is not None:
-            if request.reasoning_effort not in _REASONING_EFFORTS:
+        reasoning_effort = request.reasoning_effort or self.config.reasoning_effort
+        if reasoning_effort is not None:
+            if reasoning_effort not in REASONING_EFFORTS:
                 raise ProviderFailure(
                     "invalid_provider_request",
                     "OpenRouter reasoning effort is invalid.",
                 )
             payload["reasoning"] = {
-                "effort": request.reasoning_effort,
+                "effort": reasoning_effort,
                 "exclude": True,
             }
         http_request = Request(
@@ -81,17 +79,23 @@ class OpenRouterProvider:
                 "invalid_provider_response",
                 "OpenRouter returned an unreadable response.",
             ) from exc
-        return _structured_content(response_data)
+        return _structured_content(response_data, provider_label="OpenRouter")
 
 
-def _structured_content(data: Any) -> dict[str, object]:
+def _structured_content(data: Any, *, provider_label: str) -> dict[str, object]:
     try:
-        content = data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ProviderFailure(
             "invalid_provider_response",
-            "OpenRouter response did not contain message content.",
+            f"{provider_label} response did not contain message content.",
         ) from exc
+    tool_result = _tool_result(message)
+    if tool_result is not None:
+        if isinstance(tool_result, dict):
+            return tool_result
+        return _json_object(tool_result, provider_label=provider_label)
+    content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, dict):
         return content
     if isinstance(content, list):
@@ -103,18 +107,38 @@ def _structured_content(data: Any) -> dict[str, object]:
     if not isinstance(content, str):
         raise ProviderFailure(
             "invalid_provider_response",
-            "OpenRouter response content was not structured JSON.",
+            f"{provider_label} response content was not structured JSON.",
         )
+    return _json_object(content, provider_label=provider_label)
+
+
+def _tool_result(message: object) -> dict[str, object] | str | None:
+    if not isinstance(message, dict):
+        return None
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return None
+    for item in tool_calls:
+        function = item.get("function") if isinstance(item, dict) else None
+        if not isinstance(function, dict) or function.get("name") != "submit_tarel_result":
+            continue
+        arguments = function.get("arguments")
+        if isinstance(arguments, (dict, str)):
+            return arguments
+    return None
+
+
+def _json_object(content: str, *, provider_label: str) -> dict[str, object]:
     try:
         parsed = json.loads(content)
     except json.JSONDecodeError as exc:
         raise ProviderFailure(
             "invalid_provider_response",
-            "OpenRouter response content was not valid JSON.",
+            f"{provider_label} response content was not valid JSON.",
         ) from exc
     if not isinstance(parsed, dict):
         raise ProviderFailure(
             "invalid_provider_response",
-            "OpenRouter structured response must be a JSON object.",
+            f"{provider_label} structured response must be a JSON object.",
         )
     return parsed

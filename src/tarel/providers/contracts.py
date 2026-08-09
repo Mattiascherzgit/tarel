@@ -39,9 +39,11 @@ class ProviderCheck:
     model: str | None
     base_url: str | None
     config_path: str
+    adapter: str | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "adapter": self.adapter,
             "base_url": self.base_url,
             "config_path": self.config_path,
             "configured": self.configured,
