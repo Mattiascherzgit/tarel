@@ -102,6 +102,7 @@ def candidate_pairs(
     target_fields = [
         field
         for object_node in _object_nodes(graph)
+        if object_node.id != source_object.id
         if allowed_object_ids is None or object_node.id in allowed_object_ids
         for field in fields_by_object.get(object_node.id, [])
         if bool(field.metadata.get("is_primary_key")) or _field_position(field) == 1
