@@ -42,6 +42,7 @@ from tarel.application import (
     embedding_model_status_use_case,
     list_annotation_reviews_use_case,
     list_graphs_use_case,
+    list_provider_names_use_case,
     list_relationships_use_case,
     list_workspaces_use_case,
     load_graph_use_case,
@@ -54,6 +55,7 @@ from tarel.application import (
     run_annotation_batch_use_case,
     sample_connector_use_case,
     scaffold_connector_use_case,
+    scaffold_provider_use_case,
     search_graph_use_case,
     search_workspace_use_case,
     show_annotation_use_case,
@@ -73,6 +75,7 @@ from tarel.demo import DemoFailure
 from tarel.graph.contracts import GraphDocument, GraphFailure
 from tarel.lineage.cli import add_lineage_commands, dispatch_lineage
 from tarel.lineage.contracts import LineageFailure
+from tarel.providers.config import BUILTIN_PROVIDER_ADAPTERS
 from tarel.providers.contracts import ProviderCheck, ProviderFailure
 from tarel.relationships.core import RelationshipFailure
 from tarel.retrieval.contracts import RetrievalFailure
@@ -321,29 +324,63 @@ def build_parser() -> argparse.ArgumentParser:
         "check",
         help="Show redacted provider configuration status.",
     )
-    provider_check.add_argument("name", choices=("openrouter",))
+    provider_check.add_argument("name")
     _add_format_argument(provider_check)
 
     provider_configure = provider_commands.add_parser(
         "configure",
         help="Store provider configuration in the private user config.",
     )
-    provider_configure.add_argument("name", choices=("openrouter",))
+    provider_configure.add_argument("name")
     provider_configure.add_argument(
+        "--adapter",
+        help=(
+            "Adapter: openrouter, openai-compatible, or an installed "
+            "tarel.providers entry point."
+        ),
+    )
+    provider_credentials = provider_configure.add_mutually_exclusive_group()
+    provider_credentials.add_argument(
         "--from-env",
         action="store_true",
-        help="Read the API key from TAREL_OPENROUTER_API_KEY or OPENROUTER_API_KEY.",
+        help="Read the API key from a supported provider environment variable.",
+    )
+    provider_credentials.add_argument(
+        "--no-api-key",
+        action="store_true",
+        help="Configure an unauthenticated endpoint, normally a loopback server.",
     )
     provider_configure.add_argument("--model", help="Default provider model.")
     provider_configure.add_argument("--base-url", help="Provider API base URL.")
+    provider_configure.add_argument(
+        "--reasoning-effort",
+        choices=("none", "minimal", "low", "medium", "high", "xhigh"),
+        help="Default reasoning mode for this provider profile.",
+    )
+    provider_configure.add_argument(
+        "--structured-mode",
+        choices=("json_schema", "tool"),
+        help="Structured-output mechanism for OpenAI-compatible endpoints.",
+    )
 
     provider_test = provider_commands.add_parser(
         "test",
         help="Make one small structured-generation provider request.",
     )
-    provider_test.add_argument("name", choices=("openrouter",))
+    provider_test.add_argument("name")
     provider_test.add_argument("--timeout", type=float, default=120.0)
     _add_format_argument(provider_test)
+
+    provider_scaffold = provider_commands.add_parser(
+        "scaffold",
+        help="Create an isolated provider-adapter candidate for review.",
+    )
+    provider_scaffold.add_argument("name")
+    provider_scaffold.add_argument(
+        "--output",
+        type=Path,
+        help="Target directory (default: .tarel/providers/NAME).",
+    )
 
     model = subcommands.add_parser("model", help="Manage optional local embedding models.")
     model_commands = model.add_subparsers(dest="model_command")
@@ -512,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Run provider-backed annotation tasks, optionally in parallel.",
     )
     graph_annotate.add_argument("name")
-    graph_annotate.add_argument("--provider", required=True, choices=("openrouter",))
+    graph_annotate.add_argument("--provider", required=True)
     graph_annotate.add_argument("--namespace", "--schema", dest="namespace")
     graph_annotate.add_argument("--object", action="append", dest="objects")
     graph_annotate.add_argument("--limit", type=int)
@@ -925,8 +962,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "provider" and args.provider_command == "list":
-            result = check_provider_use_case("openrouter")
-            _render_provider_checks((result,), output_format=args.format)
+            results = tuple(
+                check_provider_use_case(name) for name in list_provider_names_use_case()
+            )
+            _render_provider_checks(results, output_format=args.format)
             return 0
 
         if args.command == "provider" and args.provider_command == "check":
@@ -935,12 +974,32 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if result.configured else 1
 
         if args.command == "provider" and args.provider_command == "configure":
-            api_key = _provider_api_key(from_env=args.from_env)
+            adapter = args.adapter or BUILTIN_PROVIDER_ADAPTERS.get(args.name)
+            api_key = None
+            if args.from_env:
+                api_key = _provider_api_key(
+                    args.name,
+                    adapter=adapter or "",
+                    from_env=True,
+                )
+            elif not args.no_api_key and adapter in {
+                "openai-compatible",
+                "openrouter",
+            }:
+                api_key = _provider_api_key(
+                    args.name,
+                    adapter=adapter,
+                    from_env=False,
+                )
             path = configure_provider_use_case(
                 args.name,
+                adapter=adapter,
                 api_key=api_key,
                 model=args.model,
                 base_url=args.base_url,
+                reasoning_effort=args.reasoning_effort,
+                structured_mode=args.structured_mode,
+                allow_no_api_key=args.no_api_key,
             )
             print(f"Configured provider {args.name}: {path}")
             return 0
@@ -952,6 +1011,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             else:
                 print(f"Provider: {result['name']}")
                 print("Status: ok")
+            return 0
+
+        if args.command == "provider" and args.provider_command == "scaffold":
+            result = scaffold_provider_use_case(args.name, output=args.output)
+            print(f"Created provider adapter candidate: {result.path}")
+            print("Next: read PROVIDER_TASK.md, implement, test, and review before installation.")
             return 0
 
         if args.command == "model" and args.model_command == "download":
@@ -1194,8 +1259,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             objects = set(args.objects or [])
             if args.samples:
                 print(
-                    f"warning: up to {args.samples} sampled rows per object will be sent to "
-                    f"provider {args.provider}",
+                    f"warning: up to {args.samples} sampled rows per object will be "
+                    f"sent to provider profile {args.provider}",
                     file=sys.stderr,
                 )
             if args.dry_run:
@@ -1742,16 +1807,27 @@ def _render_sample(result: SampleResult, *, output_format: str) -> None:
         print(json.dumps(row, ensure_ascii=False, sort_keys=True))
 
 
-def _provider_api_key(*, from_env: bool) -> str:
+def _provider_api_key(name: str, *, adapter: str, from_env: bool) -> str:
     if from_env:
-        value = os.getenv("TAREL_OPENROUTER_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        profile_name = name.upper().replace("-", "_")
+        candidates = [
+            os.getenv(f"TAREL_PROVIDER_{profile_name}_API_KEY"),
+            os.getenv("TAREL_PROVIDER_API_KEY"),
+        ]
+        if adapter == "openrouter":
+            candidates.extend(
+                [os.getenv("TAREL_OPENROUTER_API_KEY"), os.getenv("OPENROUTER_API_KEY")]
+            )
+        elif name == "openai":
+            candidates.append(os.getenv("OPENAI_API_KEY"))
+        value = next((candidate for candidate in candidates if candidate), None)
         if not value:
             raise ProviderFailure(
                 "missing_api_key",
-                "No OpenRouter API key was found in the environment.",
+                f"No API key for provider profile {name} was found in the environment.",
             )
         return value
-    return getpass.getpass("OpenRouter API key: ").strip()
+    return getpass.getpass(f"API key for provider profile {name}: ").strip()
 
 
 def _render_provider_checks(
@@ -1764,6 +1840,7 @@ def _render_provider_checks(
         return
     for result in results:
         print(f"Provider: {result.name}")
+        print(f"Adapter: {result.adapter or ''}")
         print(f"Status: {'configured' if result.configured else 'not configured'}")
         print(f"Model: {result.model or ''}")
         print(f"Base URL: {result.base_url or ''}")

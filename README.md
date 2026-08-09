@@ -77,6 +77,11 @@ TAREL supports two annotation modes:
   harness can operate on the resulting graph and context without receiving the complete sample or
   procedure payload.
 
+A provider profile makes that privacy choice operational: `local` can target a loopback llama.cpp
+or MLX server, a named `corporate` profile can target a private Qwen or DeepSeek service, and a
+cloud profile can target OpenRouter, OpenAI, or another approved endpoint. Annotation and lineage
+commands stay identical; only `--provider PROFILE` changes.
+
 Generated descriptions, relationships, and lineage claims begin as proposals. A human can validate,
 edit, reject, or defer them before they become trusted knowledge.
 
@@ -176,7 +181,7 @@ deliberately abbreviated so that semantic annotation provides measurable value.
 ### 3. Annotate and review meaning
 
 For repeatable or parallel annotation, configure a provider and let TAREL call it directly. The
-current built-in batch adapter uses the OpenRouter-compatible provider boundary:
+profile name is also the explicit data boundary. This example uses OpenRouter:
 
 ```bash
 export TAREL_OPENROUTER_API_KEY="..."
@@ -194,7 +199,17 @@ tarel graph annotate retail-demo \
 
 With an appropriate provider adapter and endpoint, this boundary can point at a privately hosted
 corporate model. The coding harness controls the command while TAREL sends the bounded annotation
-payload to that provider and persists only the resulting proposals and evidence.
+payload to that profile and persists only the resulting proposals and evidence. A local llama.cpp,
+MLX, or similar server uses the same annotation path without placing inference inside TAREL:
+
+```bash
+tarel provider configure local \
+  --no-api-key \
+  --model YOUR_LOCAL_MODEL_ID \
+  --base-url http://127.0.0.1:8080/v1 \
+  --structured-mode tool
+tarel provider test local
+```
 
 TAREL also works without a separate provider. Ask for one complete task and let the coding agent
 already operating the CLI produce the structured proposal:
@@ -549,13 +564,37 @@ Two execution modes use the same annotation contract:
 - **Provider mode:** `graph annotate` calls an optional provider once per object and can run several
   independent calls in parallel.
 
-Configure OpenRouter without writing a key into the repository:
+Provider profiles keep inference placement separate from annotation and lineage. Built-in protocol
+adapters cover OpenRouter and OpenAI-compatible Chat Completions. The OpenAI-compatible adapter
+also covers local llama.cpp/MLX servers, private vLLM servers, hosted OpenAI APIs, and corporate
+gateways when they implement the required structured-output mode.
+
+Configure a private corporate endpoint:
+
+```bash
+export TAREL_PROVIDER_CORPORATE_API_KEY='...'
+tarel provider configure corporate \
+  --adapter openai-compatible \
+  --from-env \
+  --model PRIVATE_MODEL_ID \
+  --base-url https://inference.example.com/v1 \
+  --structured-mode json_schema
+tarel provider test corporate
+```
+
+Or configure OpenRouter without writing a key into the repository:
 
 ```bash
 export OPENROUTER_API_KEY='...'
 tarel provider configure openrouter --from-env --model MODEL_NAME
 tarel provider test openrouter
 ```
+
+Unknown proprietary APIs remain outside the kernel. `tarel provider scaffold NAME` creates an
+inactive adapter package below `.tarel/providers/NAME`, together with a protocol evidence file,
+security boundaries, tests to implement, and a Python entry point. The coding harness can implement
+it from official vendor documentation, but TAREL discovers it only after the human has reviewed and
+installed the candidate.
 
 Run a bounded batch:
 
@@ -634,10 +673,12 @@ tarel lineage analyze enterprise-etl \
   --provider openrouter
 ```
 
-This command deliberately warns that definition source will leave the machine. Only a validated
-structured workfile is cached locally; the cache contains no procedure source. Its identity binds
-the definition content hash, analyzer version, provider, model, audit count, output limit, and
-reasoning effort. CLI output reports cache hits and actual provider requests.
+This command deliberately warns that the complete definition is sent to the selected provider
+profile. Whether it stays on the machine, inside a corporate network, or reaches a cloud API is
+therefore visible in that profile's endpoint. Only a validated structured workfile is cached
+locally; the cache contains no procedure source. Its identity binds the definition content hash,
+analyzer version, provider, model, audit count, output limit, and reasoning effort. CLI output
+reports cache hits and actual provider requests.
 
 Generated observations and write units remain proposals:
 
@@ -844,6 +885,7 @@ Security defaults:
 - connector manifests currently accept read permission only;
 - normal CLI errors do not print connection URLs or passwords;
 - provider keys are stored outside the repository with user-only file permissions;
+- non-TLS provider endpoints are accepted only on the loopback interface;
 - samples require an explicit command or positive sample limit;
 - sample blocks are never persisted in graph annotations;
 - inferred relationships are not traversed until human validation;
