@@ -62,6 +62,26 @@ Operational lineage is kept explicit as a second path: use tolerant `lineage fin
 report, measure, job, procedure, table, or field, then pass the returned exact reference to the
 fail-closed `lineage upstream` trace.
 
+For demand-driven discovery, persist that trace as a **focus**. A focus is a revision-bound slice
+from one report or mart back to its currently known origins. It can drive annotation and missing-
+relationship probes without scanning unrelated legacy objects:
+
+```bash
+tarel focus build commercial-sales \
+  --seed powerbi.Sales.Report.TotalSales \
+  --lineage reporting --lineage dbt --lineage warehouse-etl \
+  --graph marts --graph warehouse
+tarel annotation plan --focus commercial-sales
+tarel relationship discover warehouse \
+  --object Fact.Sale --focus commercial-sales \
+  --config private.toml --dry-run
+```
+
+Every lineage and structural graph revision is recorded. Annotation edits do not invalidate the
+slice, but renamed objects, changed topology, or changed lineage make it stale and require an
+explicit rebuild. `--expand-one-hop` can add immediate declared-FK neighbors during relationship
+discovery while keeping the candidate search bounded.
+
 ### Built for coding harnesses
 
 TAREL is primarily a CLI for coding harnesses such as Codex, Claude Code, Pi, and similar agent
@@ -253,6 +273,11 @@ tarel ui retail-demo \
 # Open all graphs in a workspace, optionally narrowed by the shared scope resolver
 tarel ui --workspace enterprise --system commercial --zone revenue \
   --lineage REPORT_LINEAGE --lineage ETL_LINEAGE
+
+# Open one or combine several saved report-to-source focuses
+tarel ui --workspace enterprise \
+  --lineage REPORT_LINEAGE --lineage ETL_LINEAGE \
+  --focus commercial-sales --focus executive-margin
 ```
 
 The UI binds only to `127.0.0.1`, makes no external requests, and adds no Python dependency. Its
@@ -267,6 +292,13 @@ from a selected object; additional objects can then be dragged onto the zone. In
 can also create a manual procedure or script and connect one source object to one target object
 through that job. These entries live in a separate manual overlay, and every new hop starts as a
 reviewable draft.
+
+Saved focuses form an independent UI filter over Space and Lineage. The browser lists compatible
+report and cube focuses, supports text search and multi-selection, and renders only the union of
+the chosen paths. This keeps a workspace with thousands of discovered tables usable while its
+catalog grows from the first report to hundreds of application-specific slices. The catalog sends
+only summaries initially; exact members and hops are loaded when focuses are selected. Clear the
+selection to return to the complete workspace.
 
 The default is read-only. `--edit` is required for annotation decisions and workspace changes.
 Every graph write carries its loaded revision, so a stale browser tab cannot silently overwrite a
@@ -378,6 +410,7 @@ The harness-facing surface stays explicit and composable:
 | `tarel demo` | Create deterministic local demo sources |
 | `tarel connector` | Check, probe, discover, sample, and scaffold source connectors |
 | `tarel graph` | Build, refresh, inspect, and provider-annotate technical graphs |
+| `tarel focus` | Persist revision-bound report-to-source slices for demand-driven work |
 | `tarel annotation` | Plan, exchange, apply, inspect, edit, and review semantic proposals |
 | `tarel relationship` | Add, probe, discover, inspect, and review possible joins |
 | `tarel lineage` | Build, refresh, analyze, inspect, and review static process and table lineage |
@@ -489,7 +522,8 @@ the warehouse.
 | Retrieval | Deterministic lexical search, dependency-free BM25, optional local vector search, and hybrid reciprocal-rank fusion |
 | Context | Bounded object, field, join, and hop selection with visible paths, reasons, warnings, and omissions |
 | Cache-friendly output | Stable and dynamic packet sections, graph revision, canonical hashes, packet diffing, and refresh impact checks |
-| Static lineage | Workflow order, procedure calls, evidence-backed write units, direct table lineage, human review, revision-aware refresh, and validated provider-workfile caching |
+| Static lineage | Workflow order, declared bindings and materializations, evidence-backed write units, direct table lineage, human review, revision-aware refresh, and validated provider-workfile caching |
+| Demand-driven focus | Reproducible report-to-source slices that bound annotation and relationship discovery |
 | Workspaces | `system → area → schema` hierarchy plus explicit overlapping zones across schemas |
 | Change Radar | Field, key, object, and relationship drift; possible renames; stale claims; affected areas, zones, and context packets |
 | Demo | Deterministic local Retail DWH with a deliberate missing relationship and reproducible V1→V2 schema drift |
@@ -670,7 +704,8 @@ pass by default, and applies the same deterministic evidence and write-coverage 
 ```bash
 tarel lineage analyze enterprise-etl \
   --source workflow.json \
-  --provider openrouter
+  --provider openrouter \
+  --definition etl.LoadFactSales
 ```
 
 This command deliberately warns that the complete definition is sent to the selected provider
@@ -709,6 +744,21 @@ tarel lineage upstream \
 Lexical and BM25 modes have no model dependency. Vector and hybrid modes use the optional local
 embedding model and rerank a bounded deterministic candidate set; they do not embed an entire
 enterprise graph on every invocation. Use the returned exact reference with `lineage upstream`.
+
+Persist a successful exact trace when the same use case should guide later work:
+
+```bash
+tarel focus build total-sales \
+  --seed powerbi.AdventureWorksSales.Report.SalesOverview.TotalSalesCard \
+  --lineage reporting --lineage dbt --lineage warehouse-etl \
+  --graph marts --graph warehouse
+tarel focus show total-sales
+tarel annotation plan --focus total-sales
+```
+
+The selected sources are always explicit; a focus never loads every local lineage document by
+accident. Its ordered members retain why they were included, their upstream depth, origin status,
+and draft or validated state inherited from the underlying evidence.
 
 Missing operational knowledge can be added without editing an imported workflow document. First
 create a job in a separate manual overlay, then add one evidence-backed source-to-target hop:

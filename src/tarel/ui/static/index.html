@@ -26,6 +26,16 @@
             <div class="pane-heading"><p class="eyebrow">Estate explorer</p><h1>Objects</h1></div>
             <label class="search"><span>⌕</span><input id="object-search" type="search" placeholder="Find table or view" autocomplete="off" /></label>
             <div class="filter-row"><button class="chip is-active" data-kind="all">All</button><button class="chip" data-kind="table">Tables</button><button class="chip" data-kind="view">Views</button></div>
+            <details id="focus-panel" class="focus-panel" open>
+              <summary><span>Report / cube focuses</span><small id="focus-count"></small></summary>
+              <div class="focus-tools">
+                <label class="focus-search"><span>⌕</span><input id="focus-search" type="search" placeholder="Find saved focus" autocomplete="off" /></label>
+                <label class="compact-check"><input id="focus-selected-only" type="checkbox" /><span>Selected only</span></label>
+              </div>
+              <nav id="focus-list" class="focus-list" aria-label="Saved report and cube focuses"></nav>
+              <div class="focus-actions"><button id="clear-focuses" class="quiet-button">Clear</button><button id="apply-focuses" class="primary-button">Apply selection</button></div>
+              <div id="focus-summary" class="focus-summary"></div>
+            </details>
             <details class="scope-panel" open><summary><span>Visible scope</span><small id="scope-count"></small></summary><div id="scope-filters"></div></details>
             <div id="object-list" class="object-list" aria-label="Graph objects"></div>
             <div class="zone-heading"><div><p class="eyebrow">Business context</p><h2>Zones</h2></div><button id="new-zone" class="icon-button" title="Create zone">＋</button></div>

@@ -12,6 +12,15 @@ from urllib.request import Request, urlopen
 
 from tarel.cli import main
 from tarel.connectors.contracts import CatalogField, CatalogObject, CatalogResult
+from tarel.focus.contracts import (
+    FocusDocument,
+    FocusFailure,
+    FocusHop,
+    FocusMember,
+    FocusSource,
+)
+from tarel.focus.core import focus_graph_revision
+from tarel.focus.store import FileFocusStore
 from tarel.graph.build import build_graph_from_catalog
 from tarel.graph.contracts import (
     AnnotationEvidence,
@@ -22,12 +31,39 @@ from tarel.graph.contracts import (
 from tarel.graph.store import FileGraphStore
 from tarel.lineage.manual import add_manual_hop, add_manual_job, create_manual_lineage
 from tarel.lineage.store import FileLineageStore
-from tarel.ui.presentation import browser_graph
+from tarel.ui.presentation import (
+    browser_focus_catalog,
+    browser_focus_selection,
+    browser_graph,
+)
 from tarel.ui.server import TarelUIBackend, UIConfig, UIFailure, _Server
 from tarel.workspaces.store import FileWorkspaceStore
 
 
 class UIPresentationTests(TestCase):
+    def test_focus_projection_combines_overlapping_report_paths(self) -> None:
+        graph = _graph()
+        first = _focus("executive-sales", graph, include_dimension=True)
+        second = _focus("regional-sales", graph, include_dimension=True)
+
+        catalog = browser_focus_catalog((second, first))
+        selection = browser_focus_selection((second, first))
+
+        self.assertEqual(
+            [item["name"] for item in catalog],
+            ["executive-sales", "regional-sales"],
+        )
+        self.assertEqual(len(selection["object_ids"]), 2)
+        self.assertEqual(len(selection["edges"]), 1)
+        self.assertEqual(
+            selection["edges"][0]["focuses"],
+            ["executive-sales", "regional-sales"],
+        )
+        fact = next(
+            item for item in selection["members"] if item["reference"] == "DemoDW.mart.FactSales"
+        )
+        self.assertEqual(fact["focuses"], ["executive-sales", "regional-sales"])
+
     def test_browser_projection_nests_fields_and_keeps_only_object_relationships(self) -> None:
         graph = _graph()
 
@@ -52,6 +88,26 @@ class UIPresentationTests(TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("error [invalid_port]", errors.getvalue())
+
+    def test_cli_accepts_multiple_initial_focuses(self) -> None:
+        with patch("tarel.ui.server.run_ui", return_value=0) as run:
+            exit_code = main(
+                [
+                    "ui",
+                    "sales",
+                    "--focus",
+                    "executive-sales",
+                    "--focus",
+                    "regional-sales",
+                    "--no-open",
+                ]
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            run.call_args.kwargs["focuses"],
+            ("executive-sales", "regional-sales"),
+        )
 
     def test_browser_projection_includes_manual_jobs_and_reviewable_hops(self) -> None:
         document, definition = add_manual_job(
@@ -98,6 +154,7 @@ class UIBackendTests(TestCase):
         self.graph_store = FileGraphStore(root / "graphs")
         self.workspace_store = FileWorkspaceStore(root / "workspaces")
         self.lineage_store = FileLineageStore(root / "lineage")
+        self.focus_store = FileFocusStore(root / "focus")
         self.graph_store.save(_graph())
         self.stack = ExitStack()
         self.stack.enter_context(
@@ -105,6 +162,9 @@ class UIBackendTests(TestCase):
         )
         self.stack.enter_context(
             patch("tarel.application.FileWorkspaceStore", return_value=self.workspace_store)
+        )
+        self.stack.enter_context(
+            patch("tarel.application.FileFocusStore", return_value=self.focus_store)
         )
         self.stack.enter_context(
             patch("tarel.lineage.application.FileLineageStore", return_value=self.lineage_store)
@@ -166,6 +226,52 @@ class UIBackendTests(TestCase):
                 },
             )
         self.assertEqual(raised.exception.status, 409)
+
+    def test_hundreds_of_focuses_can_be_listed_but_only_selected_paths_are_sent(self) -> None:
+        graph = self.graph_store.load("sales")
+        for number in range(200):
+            self.focus_store.save(
+                _focus(f"report-{number:03d}", graph, include_dimension=number % 2 == 0)
+            )
+
+        payload = self.backend.bootstrap()
+        selected = self.backend.mutate(
+            "/api/focus/select",
+            {"focuses": ["report-003", "report-004"]},
+        )
+
+        self.assertEqual(len(payload["focuses"]), 200)
+        self.assertIsNone(payload["focus_selection"])
+        self.assertEqual(selected["focuses"], ["report-003", "report-004"])
+        self.assertEqual(len(selected["object_ids"]), 2)
+        self.assertLess(len(json.dumps(selected)), len(json.dumps(payload)))
+
+    def test_stale_focus_is_visible_but_cannot_be_selected(self) -> None:
+        graph = self.graph_store.load("sales")
+        self.focus_store.save(_focus("stale-report", graph, include_dimension=True))
+        self.graph_store.save(
+            replace(
+                graph,
+                edges=(
+                    *graph.edges,
+                    GraphEdge(
+                        id="new-structural-edge",
+                        source_id=graph.edges[0].source_id,
+                        target_id=graph.edges[0].target_id,
+                        type="foreign_key",
+                        metadata={},
+                    ),
+                ),
+            )
+        )
+
+        catalog = self.backend.bootstrap()["focuses"]
+        with self.assertRaises(FocusFailure) as raised:
+            self.backend.mutate("/api/focus/select", {"focuses": ["stale-report"]})
+
+        self.assertFalse(catalog[0]["current"])
+        self.assertIn("stale", catalog[0]["stale_reason"])
+        self.assertEqual(raised.exception.code, "focus_stale")
 
     def test_zone_creation_bootstraps_workspace_and_supports_later_drag_add(self) -> None:
         created = self.backend.mutate(
@@ -423,4 +529,58 @@ def _annotation(description: str) -> GraphAnnotation:
         confidence_reason="Names and schema structure are explicit.",
         evidence=(AnnotationEvidence(source="object_name", reference="fixture"),),
         provenance=AnnotationProvenance(source="agent"),
+    )
+
+
+def _focus(
+    name: str,
+    graph,
+    *,
+    include_dimension: bool,
+) -> FocusDocument:
+    fact = next(item for item in graph.nodes if item.label == "mart.FactSales")
+    dimension = next(item for item in graph.nodes if item.label == "mart.DimDate")
+
+    def member(node, *, depth: int, origin: bool) -> FocusMember:
+        return FocusMember(
+            id=f"graph:{graph.name}:{node.id}",
+            reference=f"{graph.catalog}.{node.label}",
+            name=str(node.metadata.get("name") or node.label),
+            kind=node.type,
+            source=f"graph:{graph.name}",
+            depth=depth,
+            reasons=("seed",) if depth == 0 else ("upstream:reads_from",),
+            origin=origin,
+            annotation_state=node.annotation.state if node.annotation else None,
+        )
+
+    fact_member = member(fact, depth=0, origin=not include_dimension)
+    dimension_member = member(dimension, depth=1, origin=True)
+    members = (fact_member, dimension_member) if include_dimension else (fact_member,)
+    hops = (
+        (
+            FocusHop(
+                id="dimension-to-fact",
+                depth=1,
+                source_id=dimension_member.id,
+                target_id=fact_member.id,
+                relation="reads_from",
+                state="validated",
+                lineage=None,
+            ),
+        )
+        if include_dimension
+        else ()
+    )
+    return FocusDocument(
+        name=name,
+        seed=fact_member.reference,
+        seed_id=fact_member.id,
+        max_hops=12,
+        states=("validated",),
+        sources=(FocusSource("graph", graph.name, focus_graph_revision(graph)),),
+        members=members,
+        hops=hops,
+        warnings=(),
+        truncated=False,
     )
