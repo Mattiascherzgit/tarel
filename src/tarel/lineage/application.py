@@ -236,6 +236,7 @@ def run_lineage_provider_use_case(
     timeout: float = 180.0,
     retry: int = 1,
     limit: int | None = None,
+    definition_references: tuple[str, ...] = (),
     review_passes: int = 1,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
@@ -252,7 +253,8 @@ def run_lineage_provider_use_case(
     document = store.load(name)
     source = load_lineage_input(source_path)
     tasks = plan_lineage_tasks(document, source)
-    selected = tasks[:limit] if limit is not None else tasks
+    selected = _select_lineage_tasks(document, tasks, definition_references)
+    selected = selected[:limit] if limit is not None else selected
     provider = load_provider(provider_name, timeout=timeout)
     cache = FileLineageAnalysisCache()
     applied = 0
@@ -358,6 +360,39 @@ def run_lineage_provider_use_case(
         cache_hits=cache_hits,
         provider_requests=provider_requests,
     )
+
+
+def _select_lineage_tasks(
+    document: LineageDocument,
+    tasks: tuple[LineageTask, ...],
+    references: tuple[str, ...],
+) -> tuple[LineageTask, ...]:
+    if not references:
+        return tasks
+    if len(references) != len(set(references)):
+        raise LineageFailure(
+            "duplicate_lineage_definition",
+            "Lineage definition filters must not contain duplicates.",
+        )
+    selected_ids: set[str] = set()
+    for reference in references:
+        normalized = reference.casefold()
+        matches = [
+            item
+            for item in document.definitions
+            if normalized
+            in {
+                item.id.casefold(),
+                item.external_id.casefold(),
+                item.name.casefold(),
+                item.qualified_name.casefold(),
+            }
+        ]
+        if len(matches) != 1:
+            code = "lineage_definition_not_found" if not matches else "ambiguous_lineage_definition"
+            raise LineageFailure(code, f"Could not resolve one lineage definition: {reference}")
+        selected_ids.add(matches[0].id)
+    return tuple(item for item in tasks if item.definition_id in selected_ids)
 
 
 def _generate_valid_workfile(

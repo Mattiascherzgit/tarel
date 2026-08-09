@@ -17,6 +17,7 @@ from tarel.application import (
     add_relationship_use_case,
     add_workspace_relationship_use_case,
     apply_annotation_use_case,
+    build_focus_use_case,
     build_graph_use_case,
     build_retrieval_index_use_case,
     check_connector_use_case,
@@ -41,13 +42,16 @@ from tarel.application import (
     edit_annotation_use_case,
     embedding_model_status_use_case,
     list_annotation_reviews_use_case,
+    list_focuses_use_case,
     list_graphs_use_case,
     list_provider_names_use_case,
     list_relationships_use_case,
     list_workspaces_use_case,
+    load_focus_use_case,
     load_graph_use_case,
     load_workspace_use_case,
     plan_annotations_use_case,
+    plan_focus_annotations_use_case,
     probe_connector_use_case,
     refresh_graph_use_case,
     resolve_workspace_scope_use_case,
@@ -72,6 +76,7 @@ from tarel.connectors.contracts import (
 )
 from tarel.context import DEFAULT_MAX_CONTEXT_CHARACTERS, ContextFailure, ContextResult
 from tarel.demo import DemoFailure
+from tarel.focus.contracts import FocusDocument, FocusFailure
 from tarel.graph.contracts import GraphDocument, GraphFailure
 from tarel.lineage.cli import add_lineage_commands, dispatch_lineage
 from tarel.lineage.contracts import LineageFailure
@@ -463,6 +468,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Lineage document to include; repeat for multiple documents.",
     )
     ui.add_argument(
+        "--focus",
+        action="append",
+        dest="focuses",
+        help="Open one saved report or cube focus; repeat to combine focuses.",
+    )
+    ui.add_argument(
         "--edit",
         action="store_true",
         help="Allow explicit annotation, lineage, relationship, and zone changes.",
@@ -471,6 +482,34 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
 
     add_lineage_commands(subcommands)
+
+    focus = subcommands.add_parser(
+        "focus",
+        help="Build reproducible report-to-source slices for demand-driven work.",
+    )
+    focus_commands = focus.add_subparsers(dest="focus_command")
+    focus_build = focus_commands.add_parser(
+        "build",
+        help="Trace one seed upstream through explicitly selected sources.",
+    )
+    focus_build.add_argument("name")
+    focus_build.add_argument("--seed", required=True)
+    focus_build.add_argument("--lineage", action="append", dest="lineages")
+    focus_build.add_argument("--graph", action="append", dest="graphs")
+    focus_build.add_argument("--max-hops", type=int, default=12)
+    focus_build.add_argument(
+        "--state",
+        action="append",
+        choices=("draft", "review_required", "validated"),
+    )
+    _add_format_argument(focus_build)
+
+    focus_show = focus_commands.add_parser("show", help="Show one persisted focus snapshot.")
+    focus_show.add_argument("name")
+    _add_format_argument(focus_show)
+
+    focus_list = focus_commands.add_parser("list", help="List persisted focus snapshots.")
+    _add_format_argument(focus_list)
 
     search = subcommands.add_parser(
         "search",
@@ -576,7 +615,8 @@ def build_parser() -> argparse.ArgumentParser:
         "plan",
         help="List annotation tasks without calling an API provider.",
     )
-    annotation_plan.add_argument("name")
+    annotation_plan.add_argument("name", nargs="?", help="Graph name.")
+    annotation_plan.add_argument("--focus", help="Plan only objects reached by this focus.")
     annotation_plan.add_argument("--namespace", "--schema", dest="namespace")
     annotation_plan.add_argument("--object", action="append", dest="objects")
     annotation_plan.add_argument("--limit", type=int)
@@ -587,7 +627,8 @@ def build_parser() -> argparse.ArgumentParser:
         "next",
         help="Return the next full annotation task as JSON for the coding agent.",
     )
-    annotation_next.add_argument("name")
+    annotation_next.add_argument("name", nargs="?", help="Graph name.")
+    annotation_next.add_argument("--focus", help="Return the next task inside this focus.")
     annotation_next.add_argument("--namespace", "--schema", dest="namespace")
     annotation_next.add_argument("--object", action="append", dest="objects")
     annotation_next.add_argument("--samples", type=int, default=0)
@@ -696,6 +737,15 @@ def build_parser() -> argparse.ArgumentParser:
     relationship_discover.add_argument("--min-overlap-count", type=int, default=3)
     relationship_discover.add_argument("--min-target-uniqueness", type=float, default=0.9)
     relationship_discover.add_argument("--dry-run", action="store_true")
+    relationship_discover.add_argument(
+        "--focus",
+        help="Restrict candidate pairs to objects reached by this focus.",
+    )
+    relationship_discover.add_argument(
+        "--expand-one-hop",
+        action="store_true",
+        help="Also include objects connected by one observed foreign-key hop.",
+    )
     _add_format_argument(relationship_discover)
 
     relationship_list = relationship_commands.add_parser(
@@ -733,6 +783,31 @@ def main(argv: Sequence[str] | None = None) -> int:
         if lineage_result is not None:
             return lineage_result
 
+        if args.command == "focus" and args.focus_command == "build":
+            result = build_focus_use_case(
+                args.name,
+                seed=args.seed,
+                lineage_names=tuple(args.lineages or ()),
+                graph_names=tuple(args.graphs or ()),
+                max_hops=args.max_hops,
+                states=frozenset(args.state) if args.state else None,
+            )
+            _render_focus(result.focus, output_format=args.format, path=result.path)
+            return 0
+
+        if args.command == "focus" and args.focus_command == "show":
+            _render_focus(load_focus_use_case(args.name), output_format=args.format)
+            return 0
+
+        if args.command == "focus" and args.focus_command == "list":
+            names = list_focuses_use_case()
+            if args.format == "json":
+                print(json.dumps({"focuses": list(names)}, indent=2, sort_keys=True))
+            else:
+                for name in names:
+                    print(name)
+            return 0
+
         if args.command == "version":
             print(__version__)
             return 0
@@ -750,6 +825,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     schemas=tuple(args.schemas or ()),
                     zones=tuple(args.zones or ()),
                     lineages=tuple(args.lineages or ()),
+                    focuses=tuple(args.focuses or ()),
                     editable=args.edit,
                     port=args.port,
                     open_browser=not args.no_open,
@@ -1305,31 +1381,52 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
 
         if args.command == "annotation" and args.annotation_command == "plan":
-            tasks = plan_annotations_use_case(
-                args.name,
-                namespace=args.namespace,
-                objects=set(args.objects or []),
-                limit=args.limit,
-                missing_only=not args.include_annotated,
-            )
+            _require_graph_or_focus(args.name, args.focus)
+            if args.focus:
+                tasks = plan_focus_annotations_use_case(
+                    args.focus,
+                    namespace=args.namespace,
+                    objects=set(args.objects or []),
+                    limit=args.limit,
+                    missing_only=not args.include_annotated,
+                )
+            else:
+                tasks = plan_annotations_use_case(
+                    args.name,
+                    namespace=args.namespace,
+                    objects=set(args.objects or []),
+                    limit=args.limit,
+                    missing_only=not args.include_annotated,
+                )
             _render_annotation_plan(tasks, output_format=args.format)
             return 0
 
         if args.command == "annotation" and args.annotation_command == "next":
+            _require_graph_or_focus(args.name, args.focus)
             if args.samples:
                 print(
                     f"warning: including up to {args.samples} sampled rows "
                     "in the coding-agent task",
                     file=sys.stderr,
                 )
-            tasks = plan_annotations_use_case(
-                args.name,
-                namespace=args.namespace,
-                objects=set(args.objects or []),
-                limit=1,
-                sample_limit=args.samples,
-                config_path=args.config,
-            )
+            if args.focus:
+                tasks = plan_focus_annotations_use_case(
+                    args.focus,
+                    namespace=args.namespace,
+                    objects=set(args.objects or []),
+                    limit=1,
+                    sample_limit=args.samples,
+                    config_path=args.config,
+                )
+            else:
+                tasks = plan_annotations_use_case(
+                    args.name,
+                    namespace=args.namespace,
+                    objects=set(args.objects or []),
+                    limit=1,
+                    sample_limit=args.samples,
+                    config_path=args.config,
+                )
             if not tasks:
                 print(json.dumps({"status": "complete"}, indent=2, sort_keys=True))
                 return 0
@@ -1431,6 +1528,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 min_overlap_count=args.min_overlap_count,
                 min_target_uniqueness=args.min_target_uniqueness,
                 persist=not args.dry_run,
+                focus_name=args.focus,
+                expand_one_hop=args.expand_one_hop,
             )
             payload = {
                 "candidates": [edge.to_dict() for edge in result.candidates],
@@ -1469,6 +1568,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ConnectorFailure,
         ContextFailure,
         DemoFailure,
+        FocusFailure,
         GraphFailure,
         LineageFailure,
         ProviderFailure,
@@ -1969,7 +2069,12 @@ def _render_annotation_plan(
                 {
                     "count": len(tasks),
                     "tasks": [
-                        {"id": task.id, "target_id": task.target_id, "target": task.target_label}
+                        {
+                            "graph_name": task.graph_name,
+                            "id": task.id,
+                            "target": task.target_label,
+                            "target_id": task.target_id,
+                        }
                         for task in tasks
                     ],
                 },
@@ -1980,7 +2085,49 @@ def _render_annotation_plan(
         return
     print(f"Annotation tasks: {len(tasks)}")
     for task in tasks:
-        print(f"{task.id}  {task.target_label}")
+        print(f"{task.id}  {task.graph_name}:{task.target_label}")
+
+
+def _render_focus(
+    focus: FocusDocument,
+    *,
+    output_format: str,
+    path: Path | None = None,
+) -> None:
+    payload = focus.to_dict()
+    if path is not None:
+        payload["path"] = str(path)
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    print(f"Focus: {focus.name}")
+    print(f"Seed: {focus.seed}")
+    print(f"Revision: {focus.revision}")
+    print(f"Sources: {', '.join(f'{item.kind}:{item.name}' for item in focus.sources)}")
+    print(
+        f"Members: {len(focus.members)}; hops: {len(focus.hops)}; "
+        f"truncated: {'yes' if focus.truncated else 'no'}"
+    )
+    print("Origins:")
+    for item in focus.members:
+        if item.origin:
+            print(f"- {item.reference} [{item.kind}; {item.source}]")
+    print("Scope:")
+    for item in focus.members:
+        reasons = ", ".join(item.reasons)
+        print(f"- depth={item.depth} {item.reference} [{item.kind}; {reasons}]")
+    for warning in focus.warnings:
+        print(f"Warning: {warning}")
+    if path is not None:
+        print(f"Path: {path}")
+
+
+def _require_graph_or_focus(graph_name: str | None, focus_name: str | None) -> None:
+    if bool(graph_name) == bool(focus_name):
+        raise AnnotationFailure(
+            "invalid_annotation_scope",
+            "Provide exactly one graph NAME or --focus FOCUS.",
+        )
 
 
 def _render_annotation_records(

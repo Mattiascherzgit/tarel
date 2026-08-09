@@ -14,6 +14,7 @@ from tarel.lineage.contracts import (
     LineageDocument,
     LineageEvidence,
     LineageFailure,
+    LineageMaterialization,
     LineageWriteUnit,
     validate_lineage_document,
 )
@@ -219,21 +220,114 @@ def refresh_lineage(
     analyses: list[LineageAnalysis] = []
     failures: list[LineageAnalysisFailure] = []
     claims: list[LineageClaim] = []
+    materializations: list[LineageMaterialization] = []
     write_units: list[LineageWriteUnit] = []
     review_required_claims = 0
     review_required_write_units = 0
 
+    current_materializations = {
+        item.definition_id: item for item in current.materializations
+    }
+    discovered_materializations = {
+        item.definition_id: item for item in discovered.materializations
+    }
+    discovered_declared_claims = {
+        item.id: item
+        for item in discovered.claims
+        if item.evidence.source == "declared_reference"
+    }
+    declared_claim_keys = {
+        (item.definition_id, item.operation.casefold(), item.target.casefold())
+        for item in discovered_declared_claims.values()
+    }
+
     for definition in discovered.definitions:
         previous = current_by_external.get(definition.external_id)
+        discovered_materialization = discovered_materializations.get(definition.id)
         if previous is None:
+            if discovered_materialization is not None:
+                materializations.append(discovered_materialization)
             continue
+        previous_materialization = current_materializations.get(previous.id)
+        if discovered_materialization is not None and previous_materialization is not None:
+            if (
+                discovered_materialization.mode == previous_materialization.mode
+                and discovered_materialization.target == previous_materialization.target
+            ):
+                materializations.append(
+                    replace(
+                        discovered_materialization,
+                        state=previous_materialization.state,
+                        reviews=previous_materialization.reviews,
+                    )
+                )
+            else:
+                materializations.append(
+                    replace(
+                        discovered_materialization,
+                        state="review_required",
+                        reviews=previous_materialization.reviews,
+                    )
+                )
+                stale_items.append(
+                    _stale_item(
+                        "materialization",
+                        previous,
+                        previous_materialization.to_dict(),
+                        previous_materialization.state,
+                        True,
+                        ("materialization_changed",),
+                    )
+                )
+        elif discovered_materialization is not None:
+            materializations.append(discovered_materialization)
+        elif previous_materialization is not None:
+            stale_items.append(
+                _stale_item(
+                    "materialization",
+                    previous,
+                    previous_materialization.to_dict(),
+                    previous_materialization.state,
+                    True,
+                    ("materialization_removed",),
+                )
+            )
         previous_analyses = [
             item for item in current.analyses if item.definition_id == previous.id
         ]
         previous_failures = [
             item for item in current.analysis_failures if item.definition_id == previous.id
         ]
-        previous_claims = [item for item in current.claims if item.definition_id == previous.id]
+        for item in current.claims:
+            if (
+                item.definition_id == previous.id
+                and item.evidence.source == "declared_reference"
+                and item.id not in discovered_declared_claims
+            ):
+                stale_items.append(
+                    _stale_item(
+                        "claim",
+                        previous,
+                        item.to_dict(),
+                        item.state,
+                        True,
+                        ("declared_reference_removed",),
+                    )
+                )
+        previous_claims = [
+            item
+            for item in current.claims
+            if item.definition_id == previous.id
+            and (
+                item.evidence.source != "declared_reference"
+                or item.id in discovered_declared_claims
+            )
+            and (
+                item.evidence.source == "declared_reference"
+                or (item.definition_id, item.operation.casefold(), item.target.casefold())
+                not in declared_claim_keys
+            )
+        ]
         previous_units = [
             item for item in current.write_units if item.definition_id == previous.id
         ]
@@ -265,6 +359,7 @@ def refresh_lineage(
                 previous,
                 previous_analyses,
                 previous_failures,
+                (),
                 (),
                 (),
                 present=True,
@@ -312,17 +407,27 @@ def refresh_lineage(
                     if item.definition_id == definition.id
                 ],
                 [item for item in current.claims if item.definition_id == definition.id],
+                [
+                    item
+                    for item in current.materializations
+                    if item.definition_id == definition.id
+                ],
                 [item for item in current.write_units if item.definition_id == definition.id],
                 present=False,
                 reasons=("definition_removed",),
             )
         )
 
+    carried_claim_ids = {item.id for item in claims}
+    claims.extend(
+        item for item in discovered_declared_claims.values() if item.id not in carried_claim_ids
+    )
     refreshed = replace(
         discovered,
         analyses=tuple(sorted(analyses, key=lambda item: item.definition_id)),
         analysis_failures=tuple(sorted(failures, key=lambda item: item.definition_id)),
         claims=tuple(sorted(claims, key=lambda item: item.id)),
+        materializations=tuple(sorted(materializations, key=lambda item: item.id)),
         write_units=tuple(sorted(write_units, key=lambda item: item.id)),
     )
     validate_lineage_document(refreshed)
@@ -443,7 +548,104 @@ def classify_lineage_changes(
                 )
             )
     changes.extend(_step_changes(current, discovered))
+    changes.extend(_declared_claim_changes(current, discovered))
+    changes.extend(_materialization_changes(current, discovered))
     return tuple(sorted(changes, key=lambda item: (item.reference.casefold(), item.kind)))
+
+
+def _materialization_changes(
+    current: LineageDocument,
+    discovered: LineageDocument,
+) -> list[LineageChange]:
+    before_definitions = {item.id: item.external_id for item in current.definitions}
+    after_definitions = {item.id: item.external_id for item in discovered.definitions}
+    before = {
+        before_definitions[item.definition_id]: item for item in current.materializations
+    }
+    after = {
+        after_definitions[item.definition_id]: item for item in discovered.materializations
+    }
+    changes: list[LineageChange] = []
+    for external_id in sorted(before.keys() - after.keys()):
+        item = before[external_id]
+        changes.append(
+            LineageChange(
+                "materialization_removed",
+                "review_required",
+                "materialization",
+                external_id,
+                {"mode": item.mode, "target": item.target},
+                None,
+            )
+        )
+    for external_id in sorted(after.keys() - before.keys()):
+        item = after[external_id]
+        changes.append(
+            LineageChange(
+                "materialization_added",
+                "info",
+                "materialization",
+                external_id,
+                None,
+                {"mode": item.mode, "target": item.target},
+            )
+        )
+    for external_id in sorted(before.keys() & after.keys()):
+        old = before[external_id]
+        new = after[external_id]
+        if old.mode != new.mode or old.target != new.target:
+            changes.append(
+                LineageChange(
+                    "materialization_changed",
+                    "review_required",
+                    "materialization",
+                    external_id,
+                    {"mode": old.mode, "target": old.target},
+                    {"mode": new.mode, "target": new.target},
+                )
+            )
+    return changes
+
+
+def _declared_claim_changes(
+    current: LineageDocument,
+    discovered: LineageDocument,
+) -> list[LineageChange]:
+    before_definitions = {item.id: item.external_id for item in current.definitions}
+    after_definitions = {item.id: item.external_id for item in discovered.definitions}
+    before = {
+        (before_definitions[item.definition_id], item.operation, item.target)
+        for item in current.claims
+        if item.evidence.source == "declared_reference"
+    }
+    after = {
+        (after_definitions[item.definition_id], item.operation, item.target)
+        for item in discovered.claims
+        if item.evidence.source == "declared_reference"
+    }
+    changes = [
+        LineageChange(
+            "declared_reference_removed",
+            "review_required",
+            "claim",
+            external_id,
+            {"operation": operation, "target": target},
+            None,
+        )
+        for external_id, operation, target in sorted(before - after)
+    ]
+    changes.extend(
+        LineageChange(
+            "declared_reference_added",
+            "info",
+            "claim",
+            external_id,
+            None,
+            {"operation": operation, "target": target},
+        )
+        for external_id, operation, target in sorted(after - before)
+    )
+    return changes
 
 
 def _step_changes(
@@ -605,6 +807,7 @@ def _stale_semantics(
     analyses: list[LineageAnalysis],
     failures: list[LineageAnalysisFailure],
     claims: Sequence[LineageClaim],
+    materializations: Sequence[LineageMaterialization],
     write_units: Sequence[LineageWriteUnit],
     *,
     present: bool,
@@ -635,6 +838,17 @@ def _stale_semantics(
     result.extend(
         _stale_item("claim", definition, item.to_dict(), item.state, present, reasons)
         for item in claims
+    )
+    result.extend(
+        _stale_item(
+            "materialization",
+            definition,
+            item.to_dict(),
+            item.state,
+            present,
+            reasons,
+        )
+        for item in materializations
     )
     result.extend(
         _stale_item("write_unit", definition, item.to_dict(), item.state, present, reasons)

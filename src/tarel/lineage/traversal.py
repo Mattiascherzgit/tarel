@@ -508,6 +508,26 @@ def _build_network(
                     reviews=claim.reviews,
                 )
             )
+        for materialization in document.materializations:
+            if materialization.state not in states:
+                continue
+            source_id = definitions[(document.name, materialization.definition_id)]
+            target_id = _resolve_or_add(materialization.target, nodes, aliases)
+            definition = definitions_by_id[materialization.definition_id]
+            edges.append(
+                _Edge(
+                    id=f"lineage:{document.name}:materialization:{materialization.id}",
+                    source_id=source_id,
+                    target_id=target_id,
+                    relation="materializes_as",
+                    state=materialization.state,
+                    lineage=document.name,
+                    via_definition=definition.qualified_name,
+                    process_steps=steps.get(materialization.definition_id, ()),
+                    evidence=materialization.evidence,
+                    reviews=materialization.reviews,
+                )
+            )
         for unit in document.write_units:
             if unit.state not in states:
                 continue

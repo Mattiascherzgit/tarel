@@ -12,6 +12,7 @@ from tarel.graph.build import build_graph_from_catalog
 from tarel.graph.contracts import GraphAnnotation
 from tarel.graph.refresh import refresh_graph
 from tarel.relationships.core import (
+    RelationshipFailure,
     add_manual_relationship,
     add_profile_candidates,
     candidate_pairs,
@@ -22,6 +23,28 @@ from tarel.relationships.core import (
 
 
 class RelationshipTests(TestCase):
+    def test_candidate_pairs_can_be_hard_bounded_to_focus_objects(self) -> None:
+        graph = _anonymous_graph()
+        objects = {item.label: item.id for item in graph.nodes if item.type == "table"}
+
+        with self.assertRaises(RelationshipFailure) as raised:
+            candidate_pairs(
+                graph,
+                object_reference="x.A001",
+                field_name="C001",
+                max_pairs=5,
+                allowed_object_ids=frozenset({objects["x.B001"]}),
+            )
+        bounded = candidate_pairs(
+            graph,
+            object_reference="x.A001",
+            field_name="C001",
+            max_pairs=5,
+            allowed_object_ids=frozenset({objects["x.A001"]}),
+        )
+
+        self.assertEqual(raised.exception.code, "object_outside_focus")
+        self.assertEqual(bounded, ())
     def test_sqlite_integer_fields_can_form_candidate_pairs(self) -> None:
         graph = _anonymous_graph()
         graph = replace(

@@ -8,12 +8,13 @@ from tarel.lineage.contracts import (
     LineageClaim,
     LineageDocument,
     LineageFailure,
+    LineageMaterialization,
     LineageReview,
     LineageWriteUnit,
     validate_lineage_document,
 )
 
-LineageReviewItem = LineageClaim | LineageWriteUnit
+LineageReviewItem = LineageClaim | LineageWriteUnit | LineageMaterialization
 
 
 def list_lineage_items(
@@ -29,7 +30,7 @@ def list_lineage_items(
     unknown = selected - {"draft", "rejected", "review_required", "validated"}
     if unknown or not selected:
         raise LineageFailure("invalid_lineage_review", "Invalid lineage review-state filter.")
-    items = (*document.claims, *document.write_units)
+    items = (*document.claims, *document.materializations, *document.write_units)
     return tuple(
         sorted(
             (item for item in items if item.state in selected),
@@ -53,11 +54,22 @@ def decide_lineage_item(
     review = LineageReview(decision=decision, reason=reason.strip())
     state = "rejected" if decision == "reject" else "validated"
     claims, claim = _decide(document.claims, item_id, state=state, review=review)
+    materializations, materialization = _decide(
+        document.materializations,
+        item_id,
+        state=state,
+        review=review,
+    )
     units, unit = _decide(document.write_units, item_id, state=state, review=review)
-    found = claim or unit
+    found = claim or materialization or unit
     if found is None:
         raise LineageFailure("lineage_item_not_found", f"Lineage item not found: {item_id}")
-    updated = replace(document, claims=claims, write_units=units)
+    updated = replace(
+        document,
+        claims=claims,
+        materializations=materializations,
+        write_units=units,
+    )
     validate_lineage_document(updated)
     return updated, found
 

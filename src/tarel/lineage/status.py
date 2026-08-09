@@ -38,6 +38,7 @@ class LineageDefinitionStatus:
     failure_provider: str | None
     failure_model: str | None
     claims: LineageReviewCounts
+    materializations: LineageReviewCounts
     write_units: LineageReviewCounts
 
     def to_dict(self) -> dict[str, object]:
@@ -55,6 +56,7 @@ class LineageDefinitionStatus:
                     "provider": self.failure_provider,
                 }
             ),
+            "materializations": self.materializations.to_dict(),
             "write_units": self.write_units.to_dict(),
         }
 
@@ -68,6 +70,7 @@ class LineageStatus:
     analyses_failed: int
     analyses_pending: int
     claims: LineageReviewCounts
+    materializations: LineageReviewCounts
     write_units: LineageReviewCounts
     definitions: tuple[LineageDefinitionStatus, ...]
 
@@ -82,6 +85,7 @@ class LineageStatus:
             "claims": self.claims.to_dict(),
             "definitions": [item.to_dict() for item in self.definitions],
             "lineage": self.lineage_name,
+            "materializations": self.materializations.to_dict(),
             "source_revision": self.source_revision,
             "write_units": self.write_units.to_dict(),
         }
@@ -115,6 +119,11 @@ def lineage_status(document: LineageDocument) -> LineageStatus:
                     for item in document.claims
                     if item.definition_id == definition.id
                 ),
+                materializations=_review_counts(
+                    item.state
+                    for item in document.materializations
+                    if item.definition_id == definition.id
+                ),
                 write_units=_review_counts(
                     item.state
                     for item in document.write_units
@@ -132,6 +141,7 @@ def lineage_status(document: LineageDocument) -> LineageStatus:
         analyses_failed=failed,
         analyses_pending=len(rows) - complete - failed,
         claims=_review_counts(item.state for item in document.claims),
+        materializations=_review_counts(item.state for item in document.materializations),
         write_units=_review_counts(item.state for item in document.write_units),
         definitions=tuple(rows),
     )
