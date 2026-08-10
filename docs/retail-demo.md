@@ -8,20 +8,19 @@ SQLite driver, contains no credentials or personal data, and is created only on 
 
 ```bash
 tarel demo create retail-dwh
-tarel connector check sqlite
-tarel connector probe sqlite --config .tarel/demos/retail-dwh.toml
-tarel connector discover sqlite \
-  --config .tarel/demos/retail-dwh.toml \
-  --schema main
+tarel source configure retail-local \
+  --connector sqlite \
+  --config-ref state:demos/retail-dwh.toml \
+  --namespace main
+tarel source check retail-local
+tarel source probe retail-local
+tarel source discover retail-local
 tarel connector sample sqlite \
   --config .tarel/demos/retail-dwh.toml \
   --schema main \
   --object F_SLS_01 \
   --limit 3
-tarel graph build retail-demo \
-  --connector sqlite \
-  --config .tarel/demos/retail-dwh.toml \
-  --schema main
+tarel source build retail-local retail-demo
 ```
 
 The graph contains date, product, customer, geography, reseller, currency, and channel dimensions;
@@ -62,6 +61,8 @@ After annotation, useful questions include:
 tarel search retail-demo "internet and reseller sales by year" --mode bm25
 tarel context retail-demo "internet and reseller sales by year" --mode bm25
 tarel context retail-demo "returns by product and sales channel" --mode bm25
+tarel grounding retail-demo "internet and reseller sales by year" \
+  --source retail-local --mode bm25
 ```
 
 SQLite stores the demo's metric rows, but TAREL still emits metadata context rather than executing

@@ -51,6 +51,7 @@ from tarel.providers.contracts import (
 )
 from tarel.providers.host import load_provider
 from tarel.retrieval.local import LlamaCppEmbedding, resolve_model_path
+from tarel.runtime import TarelRuntime
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,15 +95,36 @@ class ManualHopResult:
     path: Path
 
 
-def build_lineage_use_case(name: str, *, source_path: Path) -> LineageChangeResult:
-    store = FileLineageStore()
+def _graph_store(runtime: TarelRuntime | None) -> FileGraphStore:
+    return FileGraphStore() if runtime is None else runtime.graph_store()
+
+
+def _lineage_store(runtime: TarelRuntime | None) -> FileLineageStore:
+    return FileLineageStore() if runtime is None else runtime.lineage_store()
+
+
+def _lineage_change_store(runtime: TarelRuntime | None) -> FileLineageChangeStore:
+    return FileLineageChangeStore() if runtime is None else runtime.lineage_change_store()
+
+
+def _analysis_cache(runtime: TarelRuntime | None) -> FileLineageAnalysisCache:
+    return FileLineageAnalysisCache() if runtime is None else runtime.lineage_analysis_cache()
+
+
+def build_lineage_use_case(
+    name: str,
+    *,
+    source_path: Path,
+    runtime: TarelRuntime | None = None,
+) -> LineageChangeResult:
+    store = _lineage_store(runtime)
     source = load_lineage_input(source_path)
     if store.exists(name):
         document = store.load(name)
         if document.source_revision == source.revision:
             return LineageChangeResult(document, store.path(name))
         refreshed, report = refresh_lineage(document, source)
-        report_path = FileLineageChangeStore(store.root).save(name, report)
+        report_path = _lineage_change_store(runtime).save(name, report)
         return LineageChangeResult(
             refreshed,
             store.save(refreshed),
@@ -113,8 +135,16 @@ def build_lineage_use_case(name: str, *, source_path: Path) -> LineageChangeResu
     return LineageChangeResult(document, store.save(document))
 
 
-def load_lineage_use_case(name: str) -> LineageDocument:
-    return FileLineageStore().load(name)
+def load_lineage_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> LineageDocument:
+    return _lineage_store(runtime).load(name)
+
+
+def list_lineages_use_case(*, runtime: TarelRuntime | None = None) -> tuple[str, ...]:
+    return _lineage_store(runtime).list()
 
 
 def add_manual_job_use_case(
@@ -127,8 +157,9 @@ def add_manual_job_use_case(
     source_reference: str,
     description: str,
     expected_revision: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> ManualJobResult:
-    store = FileLineageStore()
+    store = _lineage_store(runtime)
     document = store.load(name) if store.exists(name) else create_manual_lineage(name)
     _require_expected_revision(document, expected_revision)
     updated, definition = add_manual_job(
@@ -156,8 +187,9 @@ def add_manual_hop_use_case(
     line_start: int = 1,
     line_end: int = 1,
     expected_revision: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> ManualHopResult:
-    store = FileLineageStore()
+    store = _lineage_store(runtime)
     document = store.load(name)
     _require_expected_revision(document, expected_revision)
     updated, item = add_manual_hop(
@@ -179,8 +211,9 @@ def next_lineage_task_use_case(
     name: str,
     *,
     source_path: Path,
+    runtime: TarelRuntime | None = None,
 ) -> LineageTask | None:
-    document = FileLineageStore().load(name)
+    document = _lineage_store(runtime).load(name)
     source = load_lineage_input(source_path)
     tasks = plan_lineage_tasks(document, source)
     return tasks[0] if tasks else None
@@ -191,8 +224,9 @@ def apply_lineage_proposal_use_case(
     *,
     source_path: Path,
     payload: dict[str, Any],
+    runtime: TarelRuntime | None = None,
 ) -> LineageChangeResult:
-    store = FileLineageStore()
+    store = _lineage_store(runtime)
     document = store.load(name)
     source = load_lineage_input(source_path)
     updated = apply_lineage_proposal(document, source, payload)
@@ -203,8 +237,10 @@ def list_lineage_items_use_case(
     name: str,
     *,
     states: frozenset[str] | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> tuple[LineageReviewItem, ...]:
-    return list_lineage_items(FileLineageStore().load(name), states=states)
+    document = _lineage_store(runtime).load(name)
+    return list_lineage_items(document, states=states)
 
 
 def decide_lineage_item_use_case(
@@ -214,8 +250,9 @@ def decide_lineage_item_use_case(
     decision: str,
     reason: str,
     expected_revision: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> LineageReviewResult:
-    store = FileLineageStore()
+    store = _lineage_store(runtime)
     current = store.load(name)
     _require_expected_revision(current, expected_revision)
     document, item = decide_lineage_item(
@@ -241,6 +278,7 @@ def run_lineage_provider_use_case(
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
     progress: Callable[[str], None] | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> LineageProviderRunResult:
     if (
         retry < 0
@@ -249,14 +287,14 @@ def run_lineage_provider_use_case(
         or (max_output_tokens is not None and max_output_tokens < 1)
     ):
         raise LineageFailure("invalid_lineage_run", "Retry and limit values are invalid.")
-    store = FileLineageStore()
+    store = _lineage_store(runtime)
     document = store.load(name)
     source = load_lineage_input(source_path)
     tasks = plan_lineage_tasks(document, source)
     selected = _select_lineage_tasks(document, tasks, definition_references)
     selected = selected[:limit] if limit is not None else selected
     provider = load_provider(provider_name, timeout=timeout)
-    cache = FileLineageAnalysisCache()
+    cache = _analysis_cache(runtime)
     applied = 0
     cache_hits = 0
     provider_requests = 0
@@ -464,16 +502,28 @@ def _report(progress: Callable[[str], None] | None, message: str) -> None:
         progress(message)
 
 
-def process_lineage_view_use_case(name: str) -> tuple[ProcessStep, ...]:
-    return process_view(FileLineageStore().load(name))
+def process_lineage_view_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> tuple[ProcessStep, ...]:
+    return process_view(_lineage_store(runtime).load(name))
 
 
-def table_lineage_view_use_case(name: str) -> tuple[TableLineage, ...]:
-    return table_lineage(FileLineageStore().load(name))
+def table_lineage_view_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> tuple[TableLineage, ...]:
+    return table_lineage(_lineage_store(runtime).load(name))
 
 
-def lineage_status_use_case(name: str) -> LineageStatus:
-    return lineage_status(FileLineageStore().load(name))
+def lineage_status_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> LineageStatus:
+    return lineage_status(_lineage_store(runtime).load(name))
 
 
 def find_lineage_references_use_case(
@@ -485,9 +535,11 @@ def find_lineage_references_use_case(
     mode: str = "lexical",
     model_path: Path | None = None,
     n_threads: int | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> tuple[LineageReference, ...]:
-    documents = _load_lineage_documents(lineage_names)
-    graphs = tuple(FileGraphStore().load(name) for name in graph_names)
+    documents = _load_lineage_documents(lineage_names, runtime=runtime)
+    graph_store = _graph_store(runtime)
+    graphs = tuple(graph_store.load(name) for name in graph_names)
     embedder = None
     if mode in {"vector", "hybrid"}:
         embedder = LlamaCppEmbedding(resolve_model_path(model_path), n_threads=n_threads)
@@ -508,9 +560,11 @@ def trace_upstream_use_case(
     graph_names: tuple[str, ...] = (),
     max_hops: int = 12,
     states: frozenset[str] | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> UpstreamTrace:
-    documents = _load_lineage_documents(lineage_names)
-    graphs = tuple(FileGraphStore().load(name) for name in graph_names)
+    documents = _load_lineage_documents(lineage_names, runtime=runtime)
+    graph_store = _graph_store(runtime)
+    graphs = tuple(graph_store.load(name) for name in graph_names)
     selected = states if states is not None else None
     if selected is None:
         return trace_upstream(documents, graphs, reference, max_hops=max_hops)
@@ -528,8 +582,12 @@ def _require_expected_revision(
         )
 
 
-def _load_lineage_documents(names: tuple[str, ...]) -> tuple[LineageDocument, ...]:
-    store = FileLineageStore()
+def _load_lineage_documents(
+    names: tuple[str, ...],
+    *,
+    runtime: TarelRuntime | None = None,
+) -> tuple[LineageDocument, ...]:
+    store = _lineage_store(runtime)
     if not names:
         raise LineageFailure("lineage_not_found", "No local lineage documents are available.")
     return tuple(store.load(name) for name in names)

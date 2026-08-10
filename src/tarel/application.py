@@ -47,6 +47,7 @@ from tarel.context import (
     ContextResult,
     compile_context,
     compile_context_from_search,
+    compile_context_prefix,
 )
 from tarel.context_output import ContextScope
 from tarel.context_packets import (
@@ -107,6 +108,7 @@ from tarel.retrieval.local import (
     resolve_model_path,
     sha256_file,
 )
+from tarel.runtime import TarelRuntime
 from tarel.search import SearchFailure, SearchResults, search_graph
 from tarel.workspaces.contracts import (
     SchemaReference,
@@ -205,6 +207,30 @@ class WorkspaceRelationshipChangeResult:
 class FocusBuildResult:
     focus: FocusDocument
     path: Path
+
+
+def _graph_store(runtime: TarelRuntime | None) -> FileGraphStore:
+    return FileGraphStore() if runtime is None else runtime.graph_store()
+
+
+def _graph_change_store(runtime: TarelRuntime | None) -> FileGraphChangeStore:
+    return FileGraphChangeStore() if runtime is None else runtime.graph_change_store()
+
+
+def _lineage_store(runtime: TarelRuntime | None) -> FileLineageStore:
+    return FileLineageStore() if runtime is None else runtime.lineage_store()
+
+
+def _focus_store(runtime: TarelRuntime | None) -> FileFocusStore:
+    return FileFocusStore() if runtime is None else runtime.focus_store()
+
+
+def _workspace_store(runtime: TarelRuntime | None) -> FileWorkspaceStore:
+    return FileWorkspaceStore() if runtime is None else runtime.workspace_store()
+
+
+def _retrieval_index(runtime: TarelRuntime | None) -> FileRetrievalIndex:
+    return FileRetrievalIndex() if runtime is None else runtime.retrieval_index()
 
 
 def create_demo_use_case(
@@ -401,6 +427,7 @@ def build_graph_use_case(
     config_path: Path | None = None,
     database: str | None = None,
     namespace: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> GraphBuildResult:
     catalog = discover_catalog_use_case(
         connector_name,
@@ -409,7 +436,7 @@ def build_graph_use_case(
         namespace=namespace,
     )
     graph = build_graph_from_catalog(name, catalog)
-    path = FileGraphStore().save(graph)
+    path = _graph_store(runtime).save(graph)
     return GraphBuildResult(graph=graph, path=path)
 
 
@@ -418,8 +445,9 @@ def refresh_graph_use_case(
     *,
     config_path: Path | None = None,
     namespace: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> GraphRefreshResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     current = store.load(name)
     current_namespaces = {
         str(node.metadata.get("namespace"))
@@ -429,7 +457,9 @@ def refresh_graph_use_case(
     selected_namespace = (
         namespace
         if namespace is not None
-        else next(iter(current_namespaces)) if len(current_namespaces) == 1 else None
+        else next(iter(current_namespaces))
+        if len(current_namespaces) == 1
+        else None
     )
     catalog = discover_catalog_use_case(
         current.connector,
@@ -439,7 +469,7 @@ def refresh_graph_use_case(
     )
     discovered = build_graph_from_catalog(name, catalog)
     refreshed, report = refresh_graph(current, discovered)
-    workspace_store = FileWorkspaceStore()
+    workspace_store = _workspace_store(runtime)
     workspace_impacts = tuple(
         impact
         for workspace_name in workspace_store.list()
@@ -450,7 +480,7 @@ def refresh_graph_use_case(
         )
     )
     change_report_path = (
-        FileGraphChangeStore().save(name, report)
+        _graph_change_store(runtime).save(name, report)
         if report.before_revision != report.after_revision
         else None
     )
@@ -464,12 +494,16 @@ def refresh_graph_use_case(
     )
 
 
-def list_graphs_use_case() -> tuple[str, ...]:
-    return FileGraphStore().list()
+def list_graphs_use_case(*, runtime: TarelRuntime | None = None) -> tuple[str, ...]:
+    return _graph_store(runtime).list()
 
 
-def load_graph_use_case(name: str) -> GraphDocument:
-    return FileGraphStore().load(name)
+def load_graph_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> GraphDocument:
+    return _graph_store(runtime).load(name)
 
 
 def build_focus_use_case(
@@ -480,6 +514,7 @@ def build_focus_use_case(
     graph_names: tuple[str, ...],
     max_hops: int = 12,
     states: frozenset[str] | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> FocusBuildResult:
     if not lineage_names and not graph_names:
         raise FocusFailure(
@@ -488,8 +523,8 @@ def build_focus_use_case(
         )
     _require_unique_names(lineage_names, "lineage")
     _require_unique_names(graph_names, "graph")
-    lineage_store = FileLineageStore()
-    graph_store = FileGraphStore()
+    lineage_store = _lineage_store(runtime)
+    graph_store = _graph_store(runtime)
     lineages = tuple(lineage_store.load(item) for item in lineage_names)
     graphs = tuple(graph_store.load(item) for item in graph_names)
     selected_states = DEFAULT_LINEAGE_STATES if states is None else states
@@ -508,35 +543,44 @@ def build_focus_use_case(
         states=selected_states,
         max_hops=max_hops,
     )
-    return FocusBuildResult(focus, FileFocusStore().save(focus))
+    return FocusBuildResult(focus, _focus_store(runtime).save(focus))
 
 
-def load_focus_use_case(name: str) -> FocusDocument:
-    return FileFocusStore().load(name)
+def load_focus_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> FocusDocument:
+    return _focus_store(runtime).load(name)
 
 
-def list_focuses_use_case() -> tuple[str, ...]:
-    return FileFocusStore().list()
+def list_focuses_use_case(*, runtime: TarelRuntime | None = None) -> tuple[str, ...]:
+    return _focus_store(runtime).list()
 
 
 def create_workspace_use_case(
     name: str,
     *,
     description: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> WorkspaceChangeResult:
-    store = FileWorkspaceStore()
+    store = _workspace_store(runtime)
     if name in store.list():
         raise WorkspaceFailure("workspace_exists", f"Workspace already exists: {name}")
     workspace = create_workspace(name, description=description)
     return WorkspaceChangeResult(workspace=workspace, path=store.save(workspace))
 
 
-def list_workspaces_use_case() -> tuple[str, ...]:
-    return FileWorkspaceStore().list()
+def list_workspaces_use_case(*, runtime: TarelRuntime | None = None) -> tuple[str, ...]:
+    return _workspace_store(runtime).list()
 
 
-def load_workspace_use_case(name: str) -> WorkspaceDocument:
-    return FileWorkspaceStore().load(name)
+def load_workspace_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> WorkspaceDocument:
+    return _workspace_store(runtime).load(name)
 
 
 def resolve_workspace_scope_use_case(
@@ -547,6 +591,7 @@ def resolve_workspace_scope_use_case(
     areas: tuple[str, ...] = (),
     schemas: tuple[str, ...] = (),
     zones: tuple[str, ...] = (),
+    runtime: TarelRuntime | None = None,
 ) -> ResolvedScope:
     _workspace, _loaded, scope = _load_workspace_scope(
         workspace_name,
@@ -555,6 +600,7 @@ def resolve_workspace_scope_use_case(
         areas=areas,
         schemas=schemas,
         zones=zones,
+        runtime=runtime,
     )
     return scope
 
@@ -567,15 +613,16 @@ def _load_workspace_scope(
     areas: tuple[str, ...] = (),
     schemas: tuple[str, ...] = (),
     zones: tuple[str, ...] = (),
+    runtime: TarelRuntime | None = None,
 ) -> tuple[WorkspaceDocument, dict[str, GraphDocument], ResolvedScope]:
-    workspace = FileWorkspaceStore().load(workspace_name)
+    workspace = _workspace_store(runtime).load(workspace_name)
     graph_names = {
         graph_name
         for system in workspace.systems
         if not systems or system.name in systems
         for graph_name in system.graphs
     }
-    graph_store = FileGraphStore()
+    graph_store = _graph_store(runtime)
     loaded = {name: graph_store.load(name) for name in sorted(graph_names)}
     scope = resolve_scope(
         workspace,
@@ -597,9 +644,10 @@ def define_workspace_system_use_case(
     *,
     graph_names: tuple[str, ...],
     description: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> WorkspaceChangeResult:
-    workspace_store = FileWorkspaceStore()
-    graph_store = FileGraphStore()
+    workspace_store = _workspace_store(runtime)
+    graph_store = _graph_store(runtime)
     workspace = workspace_store.load(workspace_name)
     graphs = {name: graph_store.load(name) for name in graph_names}
     updated = define_system(
@@ -619,9 +667,10 @@ def define_workspace_area_use_case(
     *,
     schema_references: tuple[str, ...],
     description: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> WorkspaceChangeResult:
-    workspace_store = FileWorkspaceStore()
-    graph_store = FileGraphStore()
+    workspace_store = _workspace_store(runtime)
+    graph_store = _graph_store(runtime)
     workspace = workspace_store.load(workspace_name)
     system = require_system(workspace, system_name)
     schemas: tuple[SchemaReference, ...] = tuple(
@@ -646,9 +695,10 @@ def define_workspace_zone_use_case(
     *,
     object_references: tuple[str, ...],
     description: str | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> WorkspaceChangeResult:
-    workspace_store = FileWorkspaceStore()
-    graph_store = FileGraphStore()
+    workspace_store = _workspace_store(runtime)
+    graph_store = _graph_store(runtime)
     workspace = workspace_store.load(workspace_name)
     system = require_system(workspace, system_name)
     graphs = {name: graph_store.load(name) for name in system.graphs}
@@ -670,9 +720,10 @@ def add_workspace_relationship_use_case(
     target_reference: str,
     reason: str,
     validated: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> WorkspaceRelationshipChangeResult:
-    workspace_store = FileWorkspaceStore()
-    graph_store = FileGraphStore()
+    workspace_store = _workspace_store(runtime)
+    graph_store = _graph_store(runtime)
     workspace = workspace_store.load(workspace_name)
     graph_names = {name for system in workspace.systems for name in system.graphs}
     graphs = {name: graph_store.load(name) for name in sorted(graph_names)}
@@ -697,8 +748,9 @@ def decide_workspace_relationship_use_case(
     *,
     state: str,
     reason: str,
+    runtime: TarelRuntime | None = None,
 ) -> WorkspaceRelationshipChangeResult:
-    workspace_store = FileWorkspaceStore()
+    workspace_store = _workspace_store(runtime)
     workspace = workspace_store.load(workspace_name)
     updated, relationship = decide_workspace_relationship(
         workspace,
@@ -717,10 +769,12 @@ def show_workspace_zone_use_case(
     workspace_name: str,
     system_name: str,
     zone_name: str,
+    *,
+    runtime: TarelRuntime | None = None,
 ) -> ResolvedZone:
-    workspace = FileWorkspaceStore().load(workspace_name)
+    workspace = _workspace_store(runtime).load(workspace_name)
     system = require_system(workspace, system_name)
-    graph_store = FileGraphStore()
+    graph_store = _graph_store(runtime)
     graphs = {name: graph_store.load(name) for name in system.graphs}
     return resolve_zone(
         workspace,
@@ -741,8 +795,9 @@ def search_graph_use_case(
     n_threads: int | None = None,
     annotation_states: frozenset[str] | None = None,
     validated_only: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> SearchResults:
-    graph = FileGraphStore().load(name)
+    graph = _graph_store(runtime).load(name)
     selected_states = selected_annotation_states(
         annotation_states,
         validated_only=validated_only,
@@ -756,6 +811,7 @@ def search_graph_use_case(
         model_path=model_path,
         n_threads=n_threads,
         annotation_states=selected_states,
+        runtime=runtime,
     )
 
 
@@ -774,6 +830,7 @@ def search_workspace_use_case(
     n_threads: int | None = None,
     annotation_states: frozenset[str] | None = None,
     validated_only: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> SearchResults:
     if not 1 <= limit <= 100:
         raise SearchFailure("invalid_limit", "Search limit must be between 1 and 100.")
@@ -784,6 +841,7 @@ def search_workspace_use_case(
         areas=areas,
         schemas=schemas,
         zones=zones,
+        runtime=runtime,
     )
     selected_states = selected_annotation_states(
         annotation_states,
@@ -800,13 +858,12 @@ def search_workspace_use_case(
             loaded[name],
             query,
             limit=100,
-            object_ids=frozenset(
-                item.object_id for item in scope.objects if item.graph == name
-            ),
+            object_ids=frozenset(item.object_id for item in scope.objects if item.graph == name),
             mode=mode,
             resolved_model=resolved_model,
             embedder=embedder,
             annotation_states=selected_states,
+            runtime=runtime,
         )
         for name in scope.graph_names
     )
@@ -826,6 +883,7 @@ def _search_loaded_graph(
     embedder: LlamaCppEmbedding | None = None,
     n_threads: int | None = None,
     annotation_states: frozenset[str],
+    runtime: TarelRuntime | None = None,
 ) -> SearchResults:
     if mode == "lexical":
         return search_graph(
@@ -858,6 +916,7 @@ def _search_loaded_graph(
         embedder=selected_embedder,
         model_path=selected_model,
         annotation_states=annotation_states,
+        store=_retrieval_index(runtime),
     )
 
 
@@ -877,8 +936,9 @@ def compile_context_use_case(
     n_threads: int | None = None,
     annotation_states: frozenset[str] | None = None,
     validated_only: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> ContextResult:
-    graph = FileGraphStore().load(name)
+    graph = _graph_store(runtime).load(name)
     selected_states = selected_annotation_states(
         annotation_states,
         validated_only=validated_only,
@@ -905,6 +965,7 @@ def compile_context_use_case(
         model_path=model_path,
         n_threads=n_threads,
         annotation_states=selected_states,
+        runtime=runtime,
     )
     return compile_context_from_search(
         graph,
@@ -940,6 +1001,7 @@ def compile_workspace_context_use_case(
     n_threads: int | None = None,
     annotation_states: frozenset[str] | None = None,
     validated_only: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> ContextResult:
     workspace, loaded, scope = _load_workspace_scope(
         workspace_name,
@@ -948,6 +1010,7 @@ def compile_workspace_context_use_case(
         areas=areas,
         schemas=schemas,
         zones=zones,
+        runtime=runtime,
     )
     selected_states = selected_annotation_states(
         annotation_states,
@@ -966,6 +1029,7 @@ def compile_workspace_context_use_case(
         model_path=model_path,
         n_threads=n_threads,
         annotation_states=selected_states,
+        runtime=runtime,
     )
     projection = project_workspace_scope(workspace, loaded, scope)
     selection = scope.selection
@@ -992,6 +1056,85 @@ def compile_workspace_context_use_case(
     )
 
 
+def compile_context_prefix_use_case(
+    name: str,
+    *,
+    namespace: str | None = None,
+    max_objects: int = 250,
+    max_joins: int = 500,
+    max_fields_per_object: int = 50,
+    max_characters: int = 500_000,
+    annotation_states: frozenset[str] | None = None,
+    validated_only: bool = False,
+    runtime: TarelRuntime | None = None,
+) -> ContextResult:
+    graph = _graph_store(runtime).load(name)
+    selected_states = selected_annotation_states(
+        annotation_states,
+        validated_only=validated_only,
+    )
+    return compile_context_prefix(
+        graph,
+        namespace=namespace,
+        max_objects=max_objects,
+        max_joins=max_joins,
+        max_fields_per_object=max_fields_per_object,
+        max_characters=max_characters,
+        annotation_states=selected_states,
+    )
+
+
+def compile_workspace_context_prefix_use_case(
+    workspace_name: str,
+    *,
+    systems: tuple[str, ...] = (),
+    graphs: tuple[str, ...] = (),
+    areas: tuple[str, ...] = (),
+    schemas: tuple[str, ...] = (),
+    zones: tuple[str, ...] = (),
+    max_objects: int = 250,
+    max_joins: int = 500,
+    max_fields_per_object: int = 50,
+    max_characters: int = 500_000,
+    annotation_states: frozenset[str] | None = None,
+    validated_only: bool = False,
+    runtime: TarelRuntime | None = None,
+) -> ContextResult:
+    workspace, loaded, scope = _load_workspace_scope(
+        workspace_name,
+        systems=systems,
+        graphs=graphs,
+        areas=areas,
+        schemas=schemas,
+        zones=zones,
+        runtime=runtime,
+    )
+    selected_states = selected_annotation_states(
+        annotation_states,
+        validated_only=validated_only,
+    )
+    projection = project_workspace_scope(workspace, loaded, scope)
+    selection = scope.selection
+    return compile_context_prefix(
+        projection,
+        max_objects=max_objects,
+        max_joins=max_joins,
+        max_fields_per_object=max_fields_per_object,
+        max_characters=max_characters,
+        annotation_states=selected_states,
+        scope=ContextScope(
+            mode="workspace_prefix",
+            workspace=workspace_name,
+            scope_hash=scope.scope_hash,
+            systems=tuple(sorted(set(selection.systems))),
+            graphs=scope.graph_names,
+            areas=tuple(sorted(set(selection.areas))),
+            schemas=tuple(sorted(set(selection.schemas))),
+            zones=tuple(sorted(set(selection.zones))),
+        ),
+    )
+
+
 def diff_context_packets_use_case(left: Path, right: Path) -> ContextPacketDiff:
     return diff_context_packets(load_context_packet(left), load_context_packet(right))
 
@@ -999,12 +1142,14 @@ def diff_context_packets_use_case(left: Path, right: Path) -> ContextPacketDiff:
 def context_packet_impact_use_case(
     packet_path: Path,
     graph_name: str,
+    *,
+    runtime: TarelRuntime | None = None,
 ) -> ContextPacketImpact:
-    graph = FileGraphStore().load(graph_name)
+    graph = _graph_store(runtime).load(graph_name)
     current_revision = graph_revision(graph)
     packet = load_context_packet(packet_path)
     _packet_graph, packet_revision = context_packet_graph_identity(packet)
-    change_store = FileGraphChangeStore()
+    change_store = _graph_change_store(runtime)
     report_path = change_store.path(graph_name, packet_revision, current_revision)
     report = (
         change_store.load(graph_name, packet_revision, current_revision)
@@ -1048,10 +1193,11 @@ def build_retrieval_index_use_case(
     model_path: Path | None = None,
     batch_size: int = 16,
     n_threads: int | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> IndexBuildResult:
-    graph = FileGraphStore().load(name)
+    graph = _graph_store(runtime).load(name)
     resolved_model = resolve_model_path(model_path)
-    return FileRetrievalIndex().build(
+    return _retrieval_index(runtime).build(
         graph,
         embedder=LlamaCppEmbedding(resolved_model, n_threads=n_threads),
         model_path=resolved_model,
@@ -1059,9 +1205,13 @@ def build_retrieval_index_use_case(
     )
 
 
-def retrieval_index_status_use_case(name: str) -> dict[str, object]:
-    graph = FileGraphStore().load(name)
-    store = FileRetrievalIndex()
+def retrieval_index_status_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> dict[str, object]:
+    graph = _graph_store(runtime).load(name)
+    store = _retrieval_index(runtime)
     metadata = store.metadata(name)
     return {
         "current": metadata.graph_hash == graph_revision(graph),
@@ -1078,8 +1228,9 @@ def add_relationship_use_case(
     to_reference: str,
     reason: str,
     validated: bool,
+    runtime: TarelRuntime | None = None,
 ) -> RelationshipChangeResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     pair = relationship_pair(graph, from_reference, to_reference)
     updated, edge = add_manual_relationship(
@@ -1099,8 +1250,9 @@ def check_relationship_use_case(
     to_reference: str,
     config_path: Path | None,
     row_limit: int,
+    runtime: TarelRuntime | None = None,
 ) -> RelationshipPairProfile:
-    graph = FileGraphStore().load(name)
+    graph = _graph_store(runtime).load(name)
     pair = relationship_pair(graph, from_reference, to_reference)
     return _probe_relationship_pairs(
         graph,
@@ -1124,17 +1276,18 @@ def discover_relationships_use_case(
     persist: bool,
     focus_name: str | None = None,
     expand_one_hop: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> RelationshipDiscoveryResult:
     if expand_one_hop and focus_name is None:
         raise FocusFailure(
             "invalid_focus_scope",
             "--expand-one-hop requires --focus.",
         )
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     allowed_object_ids = None
     if focus_name is not None:
-        focus, _lineages, focus_graphs = _load_current_focus(focus_name)
+        focus, _lineages, focus_graphs = _load_current_focus(focus_name, runtime=runtime)
         focus_graph = focus_graphs.get(name)
         if focus_graph is None:
             raise FocusFailure(
@@ -1175,8 +1328,12 @@ def discover_relationships_use_case(
     )
 
 
-def list_relationships_use_case(name: str) -> tuple[GraphEdge, ...]:
-    return relationship_candidates(FileGraphStore().load(name))
+def list_relationships_use_case(
+    name: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> tuple[GraphEdge, ...]:
+    return relationship_candidates(_graph_store(runtime).load(name))
 
 
 def decide_relationship_use_case(
@@ -1185,8 +1342,9 @@ def decide_relationship_use_case(
     edge_id: str,
     state: str,
     reason: str,
+    runtime: TarelRuntime | None = None,
 ) -> RelationshipChangeResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     updated, edge = decide_relationship(
         graph,
@@ -1207,8 +1365,9 @@ def plan_annotations_use_case(
     missing_only: bool = True,
     sample_limit: int = 0,
     config_path: Path | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> tuple[AnnotationTask, ...]:
-    graph = FileGraphStore().load(name)
+    graph = _graph_store(runtime).load(name)
     return _plan_graph_annotations(
         graph,
         namespace=namespace,
@@ -1229,21 +1388,20 @@ def plan_focus_annotations_use_case(
     missing_only: bool = True,
     sample_limit: int = 0,
     config_path: Path | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> tuple[AnnotationTask, ...]:
     if limit is not None and limit < 1:
         raise AnnotationFailure(
             "invalid_annotation_limit",
             "Focus annotation limit must be positive.",
         )
-    focus, _lineages, graphs = _load_current_focus(focus_name)
+    focus, _lineages, graphs = _load_current_focus(focus_name, runtime=runtime)
     depths = {item.id: item.depth for item in focus.members}
     tasks: list[AnnotationTask] = []
     for graph_name, graph in sorted(graphs.items()):
         object_ids = graph_object_ids(focus, graph_name)
         selected_nodes = [
-            item
-            for item in graph.nodes
-            if item.id in object_ids and item.type in {"table", "view"}
+            item for item in graph.nodes if item.id in object_ids and item.type in {"table", "view"}
         ]
         selected_labels = {item.label for item in selected_nodes}
         if objects:
@@ -1287,8 +1445,9 @@ def apply_annotation_use_case(
     payload: dict[str, Any],
     *,
     source: str = "agent",
+    runtime: TarelRuntime | None = None,
 ) -> AnnotationApplyResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     envelope = AnnotationProposalEnvelope.from_dict(payload)
     updated = apply_annotation_proposal(graph, envelope, source=source)
@@ -1296,16 +1455,24 @@ def apply_annotation_use_case(
     return AnnotationApplyResult(graph=updated, path=path, target_id=envelope.target_id)
 
 
-def show_annotation_use_case(name: str, reference: str) -> AnnotationReviewRecord:
-    return annotation_review_record(FileGraphStore().load(name), reference)
+def show_annotation_use_case(
+    name: str,
+    reference: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> AnnotationReviewRecord:
+    graph = _graph_store(runtime).load(name)
+    return annotation_review_record(graph, reference)
 
 
 def list_annotation_reviews_use_case(
     name: str,
     *,
     states: frozenset[str] | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> tuple[AnnotationReviewRecord, ...]:
-    return list_annotation_reviews(FileGraphStore().load(name), states=states)
+    graph = _graph_store(runtime).load(name)
+    return list_annotation_reviews(graph, states=states)
 
 
 def edit_annotation_use_case(
@@ -1314,8 +1481,9 @@ def edit_annotation_use_case(
     patch: dict[str, Any],
     *,
     reason: str,
+    runtime: TarelRuntime | None = None,
 ) -> AnnotationReviewResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     updated, record = edit_annotation(graph, reference, patch, reason=reason)
     path = store.save(updated)
@@ -1329,8 +1497,9 @@ def decide_annotation_use_case(
     state: str,
     reason: str,
     include_fields: bool = False,
+    runtime: TarelRuntime | None = None,
 ) -> AnnotationReviewResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     updated, records = decide_annotation_scope(
         graph,
@@ -1361,8 +1530,9 @@ def run_annotation_batch_use_case(
     sample_limit: int = 0,
     config_path: Path | None = None,
     progress: Callable[[int, int, str, str], None] | None = None,
+    runtime: TarelRuntime | None = None,
 ) -> AnnotationBatchResult:
-    store = FileGraphStore()
+    store = _graph_store(runtime)
     graph = store.load(name)
     tasks = _plan_graph_annotations(
         graph,
@@ -1466,9 +1636,8 @@ def _probe_relationship_pairs(
             f"Configuration section [{graph.connector}] must be a table.",
         )
     connector = load_connector(graph.connector)
-    if (
-        "probe_relationships" not in connector.manifest.capabilities
-        or not hasattr(connector, "probe_relationships")
+    if "probe_relationships" not in connector.manifest.capabilities or not hasattr(
+        connector, "probe_relationships"
     ):
         raise ConnectorFailure(
             "unsupported_capability",
@@ -1507,10 +1676,12 @@ def _optional_string(value: Any) -> str | None:
 
 def _load_current_focus(
     name: str,
+    *,
+    runtime: TarelRuntime | None = None,
 ) -> tuple[FocusDocument, dict[str, LineageDocument], dict[str, GraphDocument]]:
-    focus = FileFocusStore().load(name)
-    lineage_store = FileLineageStore()
-    graph_store = FileGraphStore()
+    focus = _focus_store(runtime).load(name)
+    lineage_store = _lineage_store(runtime)
+    graph_store = _graph_store(runtime)
     available_lineages = set(lineage_store.list())
     available_graphs = set(graph_store.list())
     missing = [
@@ -1526,14 +1697,10 @@ def _load_current_focus(
             f"Focus {name} references missing sources: {rendered}",
         )
     lineages = {
-        item.name: lineage_store.load(item.name)
-        for item in focus.sources
-        if item.kind == "lineage"
+        item.name: lineage_store.load(item.name) for item in focus.sources if item.kind == "lineage"
     }
     graphs = {
-        item.name: graph_store.load(item.name)
-        for item in focus.sources
-        if item.kind == "graph"
+        item.name: graph_store.load(item.name) for item in focus.sources if item.kind == "graph"
     }
     require_current_focus(focus, lineages=lineages, graphs=graphs)
     return focus, lineages, graphs

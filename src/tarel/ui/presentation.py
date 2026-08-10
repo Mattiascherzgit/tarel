@@ -142,6 +142,7 @@ def _browser_payload(
         "scope": scope.to_dict() if scope else None,
         "source_type": first.source_type if len(graphs) == 1 else "workspace",
         "title": scope.workspace if scope else first.name,
+        "view_modes": ["space", "lineage"],
         "workspaces": [
             _workspace_payload_for_graphs(workspace, {graph.name for graph in graphs})
             for workspace in sorted(workspaces, key=lambda item: item.name)

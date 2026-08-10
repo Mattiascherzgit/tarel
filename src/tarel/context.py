@@ -214,6 +214,107 @@ def compile_context_from_search(
     return _fit_character_budget(result)
 
 
+def compile_context_prefix(
+    graph: GraphDocument,
+    *,
+    namespace: str | None = None,
+    max_objects: int = 250,
+    max_joins: int = 500,
+    max_fields_per_object: int = 50,
+    max_characters: int = 500_000,
+    annotation_states: frozenset[str] = DEFAULT_CONTEXT_ANNOTATION_STATES,
+    scope: ContextScope | None = None,
+) -> ContextResult:
+    """Compile one query-independent graph or workspace scope for prompt-prefix reuse."""
+    _validate_prefix_budgets(
+        max_objects=max_objects,
+        max_joins=max_joins,
+        max_fields_per_object=max_fields_per_object,
+        max_characters=max_characters,
+    )
+    eligible_nodes = sorted(
+        (
+            node
+            for node in graph.nodes
+            if node.type in {"table", "view"}
+            and (
+                namespace is None
+                or str(node.metadata.get("namespace") or "").casefold() == namespace.casefold()
+            )
+        ),
+        key=lambda node: (node.label.casefold(), node.id),
+    )
+    if not eligible_nodes:
+        raise ContextFailure(
+            "empty_context_scope",
+            "The selected context prefix scope contains no tables or views.",
+        )
+    selected_nodes = eligible_nodes[:max_objects]
+    selected_ids = {node.id for node in selected_nodes}
+    node_by_id = graph.node_by_id()
+    eligible_joins = tuple(
+        sorted(
+            (
+                _context_join(edge, node_by_id)
+                for edge in usable_relationships(graph)
+                if edge.source_id in selected_ids and edge.target_id in selected_ids
+            ),
+            key=lambda join: (
+                _join_rank(join),
+                join.from_object.casefold(),
+                join.to_object.casefold(),
+                join.id,
+            ),
+        )
+    )
+    joins = eligible_joins[:max_joins]
+    selected = {
+        node.id: _Selection(
+            kind="scope",
+            distance=0,
+            seed_id=node.id,
+            object_ids=(node.id,),
+            join_ids=(),
+        )
+        for node in selected_nodes
+    }
+    objects = _context_objects(
+        graph,
+        selected,
+        seeds=(),
+        search_by_id={},
+        joins=joins,
+        max_fields=max_fields_per_object,
+        annotation_states=annotation_states,
+    )
+    result = ContextResult(
+        graph=graph.name,
+        graph_revision=graph_revision(graph),
+        scope=scope or ContextScope(mode="graph_prefix", namespace=namespace),
+        query="",
+        terms=(),
+        objects=objects,
+        joins=joins,
+        paths=(),
+        seed_limit=1,
+        max_objects=max_objects,
+        max_joins=max_joins,
+        max_hops=0,
+        max_fields_per_object=max_fields_per_object,
+        max_characters=max_characters,
+        stable_characters=0,
+        context_characters=0,
+        omissions=_context_omissions(
+            objects=max(0, len(eligible_nodes) - len(selected_nodes)),
+            fields=sum(item.omitted_fields for item in objects),
+            joins=max(0, len(eligible_joins) - len(joins)),
+        ),
+        retrieval_mode="scope",
+        annotation_states=annotation_states,
+    )
+    return _fit_character_budget(result)
+
+
 def _validate_budgets(
     *,
     seed_limit: int,
@@ -242,6 +343,35 @@ def _validate_budgets(
         raise ContextFailure(
             "invalid_context_budget",
             "Stable context character budget must be between 1000 and 1000000.",
+        )
+
+
+def _validate_prefix_budgets(
+    *,
+    max_objects: int,
+    max_joins: int,
+    max_fields_per_object: int,
+    max_characters: int,
+) -> None:
+    if not 1 <= max_objects <= 5_000:
+        raise ContextFailure(
+            "invalid_context_budget",
+            "Prefix object budget must be between 1 and 5000.",
+        )
+    if not 0 <= max_joins <= 10_000:
+        raise ContextFailure(
+            "invalid_context_budget",
+            "Prefix join budget must be between 0 and 10000.",
+        )
+    if not 1 <= max_fields_per_object <= 100:
+        raise ContextFailure(
+            "invalid_context_budget",
+            "Prefix field budget must be between 1 and 100 per object.",
+        )
+    if not 1_000 <= max_characters <= 10_000_000:
+        raise ContextFailure(
+            "invalid_context_budget",
+            "Prefix character budget must be between 1000 and 10000000.",
         )
 
 

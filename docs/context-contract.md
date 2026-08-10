@@ -37,8 +37,16 @@ a harness can reuse the largest possible prefix; the combined identity follows b
 
 The query still determines which facts are selected. Within that selected set, objects, fields, and
 joins are ordered by stable IDs rather than search rank; rank exists only in `dynamic.selection`.
-Future schema, zone, area, and system packets can reuse the representation while changing the
-explicit scope.
+
+`tarel context prefix` uses the same packet contract for a query-independent graph, schema, system,
+area, or zone scope. Such a packet has an empty query, `retrieval.mode` set to `scope`, and a scope
+mode of `graph_prefix` or `workspace_prefix`. The complete packet can therefore remain unchanged in
+a system prompt across questions. Object, field, join, and character limits remain explicit and
+every omission remains visible.
+
+SDK consumers can alternatively split a retrieved packet with `tarel.context.split(packet)`. The
+resulting stable and dynamic JSON blocks carry the same hashes as the original packet; TAREL does
+not add provider-specific cache headers or claim that a provider accepted a cache write.
 
 ## Identity and comparison
 
@@ -53,6 +61,13 @@ explicit scope.
 Consumers must validate hashes before trusting a serialized v0.2 packet. A query-only change may
 reuse the stable prefix when `stable_hash` remains equal. A graph, semantic review, or stable scope
 change produces a new stable identity.
+
+`tarel.grounding.v0.1` wraps this packet without changing it when an agent also needs explicit
+source-to-object routing, per-graph SQL dialects, selected lineage revisions, lineage matches, or an
+upstream trace. A registered logical source contributes its name and profile revision, but never its
+config reference or resolved connection URL. It has separate stable, dynamic, and bundle hashes and
+removes volatile lineage evidence paths from its agent-facing projection. See the
+[SDK guide](sdk.md#ground-a-bi-agent-turn).
 
 `tarel context diff LEFT RIGHT` validates both packets and reports stable, dynamic, graph revision,
 scope, query, object, and join differences. The former invocation remains compatible:
