@@ -23,7 +23,9 @@ from tarel.application import (
     check_connector_use_case,
     check_provider_use_case,
     check_relationship_use_case,
+    compile_context_prefix_use_case,
     compile_context_use_case,
+    compile_workspace_context_prefix_use_case,
     compile_workspace_context_use_case,
     configure_provider_use_case,
     context_packet_impact_use_case,
@@ -78,6 +80,11 @@ from tarel.context import DEFAULT_MAX_CONTEXT_CHARACTERS, ContextFailure, Contex
 from tarel.demo import DemoFailure
 from tarel.focus.contracts import FocusDocument, FocusFailure
 from tarel.graph.contracts import GraphDocument, GraphFailure
+from tarel.grounding import GroundingBundle
+from tarel.grounding_application import (
+    compile_graph_grounding_use_case,
+    compile_workspace_grounding_use_case,
+)
 from tarel.lineage.cli import add_lineage_commands, dispatch_lineage
 from tarel.lineage.contracts import LineageFailure
 from tarel.providers.config import BUILTIN_PROVIDER_ADAPTERS
@@ -86,6 +93,18 @@ from tarel.relationships.core import RelationshipFailure
 from tarel.retrieval.contracts import RetrievalFailure
 from tarel.retrieval.local import DEFAULT_MODEL_NAME
 from tarel.search import SearchFailure, SearchResults
+from tarel.sources.application import (
+    SourceCheck,
+    build_source_graph_use_case,
+    check_source_use_case,
+    configure_source_use_case,
+    discover_source_use_case,
+    list_sources_use_case,
+    load_source_use_case,
+    probe_source_use_case,
+    refresh_source_graph_use_case,
+)
+from tarel.sources.contracts import SourceFailure, SourceProfile
 from tarel.workspaces.contracts import WorkspaceDocument, WorkspaceFailure
 from tarel.workspaces.core import ResolvedZone
 from tarel.workspaces.scope import ResolvedScope
@@ -269,6 +288,78 @@ def build_parser() -> argparse.ArgumentParser:
         workspace_relationship_decide.add_argument("--reason", required=True)
         _add_format_argument(workspace_relationship_decide)
 
+    source = subcommands.add_parser(
+        "source",
+        help="Manage private logical sources and their connector-backed graphs.",
+    )
+    source_commands = source.add_subparsers(dest="source_command")
+    source_configure = source_commands.add_parser(
+        "configure",
+        help="Create or explicitly replace a non-secret logical source profile.",
+    )
+    source_configure.add_argument("name")
+    source_configure.add_argument("--connector", required=True)
+    source_configure.add_argument(
+        "--config-ref",
+        dest="config_reference",
+        help="env:VARIABLE or state:relative/path.toml; never a connection URL.",
+    )
+    source_configure.add_argument("--database")
+    source_configure.add_argument("--namespace", "--schema", dest="namespace")
+    source_configure.add_argument("--graph", action="append", dest="graphs")
+    source_configure.add_argument("--replace", action="store_true")
+    _add_format_argument(source_configure)
+
+    source_list = source_commands.add_parser("list", help="List configured logical sources.")
+    _add_format_argument(source_list)
+
+    source_show = source_commands.add_parser("show", help="Show one logical source profile.")
+    source_show.add_argument("name")
+    _add_format_argument(source_show)
+
+    source_check = source_commands.add_parser(
+        "check",
+        help="Check connector availability and whether the config reference resolves.",
+    )
+    source_check.add_argument("name")
+    _add_format_argument(source_check)
+
+    source_probe = source_commands.add_parser(
+        "probe",
+        help="Resolve the private config reference and run a bounded read-only probe.",
+    )
+    source_probe.add_argument("name")
+    source_probe.add_argument("--database")
+    _add_format_argument(source_probe)
+
+    source_discover = source_commands.add_parser(
+        "discover",
+        help="Discover source metadata through the configured connector.",
+    )
+    source_discover.add_argument("name")
+    source_discover.add_argument("--database")
+    source_discover.add_argument("--namespace", "--schema", dest="namespace")
+    _add_format_argument(source_discover)
+
+    source_build = source_commands.add_parser(
+        "build",
+        help="Build a graph and bind it to this logical source.",
+    )
+    source_build.add_argument("name")
+    source_build.add_argument("graph_name")
+    source_build.add_argument("--database")
+    source_build.add_argument("--namespace", "--schema", dest="namespace")
+    _add_format_argument(source_build)
+
+    source_refresh = source_commands.add_parser(
+        "refresh",
+        help="Refresh a bound graph through this logical source.",
+    )
+    source_refresh.add_argument("name")
+    source_refresh.add_argument("graph_name")
+    source_refresh.add_argument("--namespace", "--schema", dest="namespace")
+    _add_format_argument(source_refresh)
+
     connector = subcommands.add_parser("connector", help="Inspect and run source connectors.")
     connector_commands = connector.add_subparsers(dest="connector_command")
 
@@ -340,8 +431,7 @@ def build_parser() -> argparse.ArgumentParser:
     provider_configure.add_argument(
         "--adapter",
         help=(
-            "Adapter: openrouter, openai-compatible, or an installed "
-            "tarel.providers entry point."
+            "Adapter: openrouter, openai-compatible, or an installed tarel.providers entry point."
         ),
     )
     provider_credentials = provider_configure.add_mutually_exclusive_group()
@@ -567,6 +657,23 @@ def build_parser() -> argparse.ArgumentParser:
     _add_annotation_state_arguments(context_build)
     _add_format_argument(context_build)
 
+    context_prefix = context_commands.add_parser(
+        "prefix",
+        help="Compile a query-independent graph or workspace scope for prompt caching.",
+    )
+    context_prefix.add_argument(
+        "name",
+        help="Graph name, or workspace name with --workspace.",
+    )
+    context_prefix.add_argument("--namespace", "--schema", dest="namespace")
+    context_prefix.add_argument("--max-objects", type=int, default=250)
+    context_prefix.add_argument("--max-joins", type=int, default=500)
+    context_prefix.add_argument("--max-fields-per-object", type=int, default=50)
+    context_prefix.add_argument("--max-characters", type=int, default=500_000)
+    _add_workspace_retrieval_scope_arguments(context_prefix)
+    _add_annotation_state_arguments(context_prefix)
+    _add_format_argument(context_prefix)
+
     context_diff = context_commands.add_parser(
         "diff",
         help="Validate and compare two serialized context packets.",
@@ -582,6 +689,55 @@ def build_parser() -> argparse.ArgumentParser:
     context_impact.add_argument("packet", type=Path)
     context_impact.add_argument("--graph", required=True, help="Current local graph name.")
     _add_format_argument(context_impact)
+
+    grounding = subcommands.add_parser(
+        "grounding",
+        help="Compile agent-ready context with source, dialect, and optional lineage identity.",
+    )
+    grounding.add_argument("name", help="Graph name, or workspace name with --workspace.")
+    grounding.add_argument("query", help="Analytical question or compact search query.")
+    grounding.add_argument("--namespace", "--schema", dest="namespace")
+    grounding.add_argument("--lineage", action="append", dest="lineages")
+    grounding.add_argument(
+        "--source",
+        action="append",
+        dest="sources",
+        help="Select a logical execution source; repeat for multi-graph context.",
+    )
+    grounding.add_argument("--trace", dest="trace_reference")
+    grounding.add_argument("--lineage-limit", type=int, default=8)
+    grounding.add_argument(
+        "--lineage-mode",
+        choices=("lexical", "bm25", "vector", "hybrid"),
+        default="bm25",
+    )
+    grounding.add_argument(
+        "--lineage-state",
+        action="append",
+        dest="lineage_states",
+        choices=("draft", "review_required", "validated"),
+    )
+    grounding.add_argument("--seed-limit", type=int, default=3)
+    grounding.add_argument("--max-objects", type=int, default=10)
+    grounding.add_argument("--max-joins", type=int, default=12)
+    grounding.add_argument("--max-hops", type=int, default=2)
+    grounding.add_argument("--max-trace-hops", type=int, default=12)
+    grounding.add_argument("--max-fields-per-object", type=int, default=12)
+    grounding.add_argument(
+        "--max-characters",
+        type=int,
+        default=DEFAULT_MAX_CONTEXT_CHARACTERS,
+    )
+    grounding.add_argument(
+        "--mode",
+        choices=("lexical", "bm25", "vector", "hybrid"),
+        default="lexical",
+    )
+    grounding.add_argument("--model", type=Path, dest="model_path")
+    grounding.add_argument("--threads", type=int, dest="n_threads")
+    _add_workspace_retrieval_scope_arguments(grounding)
+    _add_annotation_state_arguments(grounding)
+    _add_format_argument(grounding)
 
     graph_annotate = graph_commands.add_parser(
         "annotate",
@@ -773,7 +929,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if (
         len(arguments) >= 2
         and arguments[0] == "context"
-        and arguments[1] not in {"build", "diff", "impact", "-h", "--help"}
+        and arguments[1] not in {"build", "prefix", "diff", "impact", "-h", "--help"}
     ):
         arguments.insert(1, "build")
     args = parser.parse_args(arguments)
@@ -847,10 +1003,85 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Created demo: {result.name} v{result.version}")
                 print(f"Database: {result.database_path}")
                 print(f"Connector config: {result.config_path}")
+                print(f"Next: tarel connector probe sqlite --config {result.config_path}")
+            return 0
+
+        if args.command == "source" and args.source_command == "configure":
+            result = configure_source_use_case(
+                args.name,
+                connector=args.connector,
+                config_reference=args.config_reference,
+                database=args.database,
+                namespace=args.namespace,
+                graphs=tuple(args.graphs or ()),
+                replace=args.replace,
+            )
+            _render_source(result.source, output_format=args.format)
+            return 0
+
+        if args.command == "source" and args.source_command == "list":
+            names = list_sources_use_case()
+            if args.format == "json":
+                print(json.dumps({"sources": list(names)}, indent=2, sort_keys=True))
+            else:
+                for name in names:
+                    print(name)
+            return 0
+
+        if args.command == "source" and args.source_command == "show":
+            _render_source(load_source_use_case(args.name), output_format=args.format)
+            return 0
+
+        if args.command == "source" and args.source_command == "check":
+            result = check_source_use_case(args.name)
+            _render_source_check(result, output_format=args.format)
+            return 0 if result.available else 1
+
+        if args.command == "source" and args.source_command == "probe":
+            result = probe_source_use_case(args.name, database=args.database)
+            _render_probe(result, output_format=args.format)
+            return 0
+
+        if args.command == "source" and args.source_command == "discover":
+            result = discover_source_use_case(
+                args.name,
+                database=args.database,
+                namespace=args.namespace,
+            )
+            _render_catalog(result, output_format=args.format)
+            return 0
+
+        if args.command == "source" and args.source_command == "build":
+            result = build_source_graph_use_case(
+                args.name,
+                args.graph_name,
+                database=args.database,
+                namespace=args.namespace,
+            )
+            _render_graph_summary(result.graph, output_format=args.format, path=result.path)
+            return 0
+
+        if args.command == "source" and args.source_command == "refresh":
+            result = refresh_source_graph_use_case(
+                args.name,
+                args.graph_name,
+                namespace=args.namespace,
+            )
+            if args.format == "json":
                 print(
-                    "Next: tarel connector probe sqlite "
-                    f"--config {result.config_path}"
+                    json.dumps(
+                        {
+                            "graph": result.graph.to_dict(),
+                            "path": str(result.path),
+                            "refresh": result.report.to_dict(),
+                        },
+                        indent=2,
+                        sort_keys=True,
+                    )
                 )
+            else:
+                _render_graph_summary(result.graph, output_format="text", path=result.path)
+                print(f"Changes: {len(result.report.changes)}")
             return 0
 
         if args.command == "workspace" and args.workspace_command == "create":
@@ -982,9 +1213,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.workspace_name,
                 args.relationship_id,
                 state=(
-                    "validated"
-                    if args.workspace_relationship_command == "validate"
-                    else "rejected"
+                    "validated" if args.workspace_relationship_command == "validate" else "rejected"
                 ),
                 reason=args.reason,
             )
@@ -1189,9 +1418,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "graph": result.graph.name,
                 "path": str(result.path),
                 "refresh": result.report.to_dict(),
-                "workspace_impacts": [
-                    impact.to_dict() for impact in result.workspace_impacts
-                ],
+                "workspace_impacts": [impact.to_dict() for impact in result.workspace_impacts],
             }
             if args.format == "json":
                 print(json.dumps(payload, indent=2, sort_keys=True))
@@ -1202,10 +1429,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     values = ""
                     if change.before is not None or change.after is not None:
                         values = f" ({change.before!r} -> {change.after!r})"
-                    print(
-                        f"- {change.kind}: {change.reference} "
-                        f"[{change.severity}]{values}"
-                    )
+                    print(f"- {change.kind}: {change.reference} [{change.severity}]{values}")
                 print(
                     "Review required: "
                     f"annotations={result.report.review_required_annotations}, "
@@ -1278,6 +1502,56 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render_search_results(results, output_format=args.format)
             return 0
 
+        if args.command == "grounding":
+            grounding_arguments = {
+                "lineage_names": tuple(args.lineages or ()),
+                "source_names": tuple(args.sources or ()),
+                "trace_reference": args.trace_reference,
+                "lineage_limit": args.lineage_limit,
+                "lineage_mode": args.lineage_mode,
+                "lineage_states": (frozenset(args.lineage_states) if args.lineage_states else None),
+                "seed_limit": args.seed_limit,
+                "max_objects": args.max_objects,
+                "max_joins": args.max_joins,
+                "max_hops": args.max_hops,
+                "max_trace_hops": args.max_trace_hops,
+                "max_fields_per_object": args.max_fields_per_object,
+                "max_characters": args.max_characters,
+                "mode": args.mode,
+                "model_path": args.model_path,
+                "n_threads": args.n_threads,
+                "annotation_states": (
+                    frozenset(args.annotation_states) if args.annotation_states else None
+                ),
+                "validated_only": args.validated_only,
+            }
+            if args.workspace:
+                if args.namespace is not None:
+                    raise WorkspaceFailure(
+                        "invalid_workspace_scope",
+                        "Use --scope-schema GRAPH:NAMESPACE instead of --namespace "
+                        "for a workspace.",
+                    )
+                result = compile_workspace_grounding_use_case(
+                    args.name,
+                    args.query,
+                    systems=tuple(args.systems or ()),
+                    graphs=tuple(args.graphs or ()),
+                    areas=tuple(args.areas or ()),
+                    schemas=tuple(args.schemas or ()),
+                    zones=tuple(args.zones or ()),
+                    **grounding_arguments,
+                )
+            else:
+                result = compile_graph_grounding_use_case(
+                    args.name,
+                    args.query,
+                    namespace=args.namespace,
+                    **grounding_arguments,
+                )
+            _render_grounding(result, output_format=args.format)
+            return 0
+
         if args.command == "context" and args.context_command == "build":
             context_arguments = {
                 "seed_limit": args.seed_limit,
@@ -1317,6 +1591,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.query,
                     namespace=args.namespace,
                     **context_arguments,
+                )
+            _render_context(result, output_format=args.format)
+            return 0
+
+        if args.command == "context" and args.context_command == "prefix":
+            prefix_arguments = {
+                "max_objects": args.max_objects,
+                "max_joins": args.max_joins,
+                "max_fields_per_object": args.max_fields_per_object,
+                "max_characters": args.max_characters,
+                "annotation_states": (
+                    frozenset(args.annotation_states) if args.annotation_states else None
+                ),
+                "validated_only": args.validated_only,
+            }
+            if args.workspace:
+                if args.namespace is not None:
+                    raise WorkspaceFailure(
+                        "invalid_workspace_scope",
+                        "Use --scope-schema GRAPH:NAMESPACE instead of --namespace "
+                        "for a workspace.",
+                    )
+                result = compile_workspace_context_prefix_use_case(
+                    args.name,
+                    systems=tuple(args.systems or ()),
+                    graphs=tuple(args.graphs or ()),
+                    areas=tuple(args.areas or ()),
+                    schemas=tuple(args.schemas or ()),
+                    zones=tuple(args.zones or ()),
+                    **prefix_arguments,
+                )
+            else:
+                result = compile_context_prefix_use_case(
+                    args.name,
+                    namespace=args.namespace,
+                    **prefix_arguments,
                 )
             _render_context(result, output_format=args.format)
             return 0
@@ -1547,7 +1857,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render_relationship_payload(payload, output_format=args.format)
             return 0
 
-
         if args.command == "relationship" and args.relationship_command in {"validate", "reject"}:
             state = "validated" if args.relationship_command == "validate" else "rejected"
             result = decide_relationship_use_case(
@@ -1575,6 +1884,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         RelationshipFailure,
         RetrievalFailure,
         SearchFailure,
+        SourceFailure,
         WorkspaceFailure,
     ) as exc:
         print(f"error [{exc.code}]: {exc}", file=sys.stderr)
@@ -1748,7 +2058,11 @@ def _render_context(result: ContextResult, *, output_format: str) -> None:
     print("\n## Dynamic request")
     print(f"Dynamic hash: {result.dynamic_hash}")
     print(f"Packet hash: {result.packet_hash}")
-    print(f"Question: {result.query}")
+    print(
+        "Question: <none; query-independent prefix>"
+        if result.retrieval_mode == "scope"
+        else f"Question: {result.query}"
+    )
     print(f"Retrieval: {result.retrieval_mode}")
     print(f"Terms: {', '.join(result.terms)}")
     print(
@@ -1777,6 +2091,15 @@ def _render_context(result: ContextResult, *, output_format: str) -> None:
         print("Expansion paths:")
         for path in result.paths:
             print(f"- {' -> '.join(path.objects)}")
+
+
+def _render_grounding(result: GroundingBundle, *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(result.to_dict(), ensure_ascii=False, indent=2))
+        return
+    print(result.stable_prompt(), end="")
+    print()
+    print(result.dynamic_prompt(), end="")
 
 
 def _render_context_diff(payload: dict[str, object], *, output_format: str) -> None:
@@ -1969,6 +2292,32 @@ def _render_workspace(workspace: WorkspaceDocument, *, output_format: str) -> No
         print(f"Workspace relationships: {len(workspace.relationships)}")
         for relationship in sorted(workspace.relationships, key=lambda item: item.id):
             print(f"  {relationship.id} [{relationship.state}]")
+
+
+def _render_source(source: SourceProfile, *, output_format: str) -> None:
+    payload = {**source.to_dict(), "revision": source.revision}
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    print(f"Source: {source.name}")
+    print(f"Connector: {source.connector}")
+    print(f"Config reference: {source.config_reference or 'connector environment'}")
+    print(f"Database: {source.database or 'connector default'}")
+    print(f"Namespace: {source.namespace or 'all'}")
+    print(f"Graphs: {', '.join(source.graphs) or 'none'}")
+    print("Read only: yes")
+    print(f"Revision: {source.revision}")
+
+
+def _render_source_check(result: SourceCheck, *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    print(f"Source: {result.source.name}")
+    print(f"Connector: {result.connector.name}")
+    print(f"Connector available: {'yes' if result.connector.available else 'no'}")
+    print(f"Config status: {result.config_status}")
+    print(f"Available: {'yes' if result.available else 'no'}")
 
 
 def _render_resolved_zone(zone: ResolvedZone, *, output_format: str) -> None:
@@ -2217,9 +2566,7 @@ def _render_annotation_change(
 def _read_json_object(path_value: str) -> dict[str, object]:
     try:
         raw = (
-            sys.stdin.read()
-            if path_value == "-"
-            else Path(path_value).read_text(encoding="utf-8")
+            sys.stdin.read() if path_value == "-" else Path(path_value).read_text(encoding="utf-8")
         )
         payload = json.loads(raw)
     except FileNotFoundError as exc:

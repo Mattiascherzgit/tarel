@@ -14,7 +14,8 @@ from tarel.connectors.contracts import (
     CatalogRelationship,
     CatalogResult,
 )
-from tarel.context import ContextFailure, compile_context
+from tarel.context import ContextFailure, compile_context, compile_context_prefix
+from tarel.context_caching import split_context_packet
 from tarel.context_output import canonical_hash
 from tarel.graph.build import build_graph_from_catalog
 from tarel.graph.store import FileGraphStore
@@ -169,6 +170,64 @@ class ContextTests(TestCase):
         self.assertEqual(first.stable_hash, changed.stable_hash)
         self.assertNotEqual(first.dynamic_hash, changed.dynamic_hash)
         self.assertNotEqual(first.packet_hash, changed.packet_hash)
+
+    def test_scope_prefix_is_query_independent_and_split_blocks_are_hash_bound(self) -> None:
+        graph = _context_graph(include_geography_fk=True)
+        prefix = compile_context_prefix(
+            graph,
+            namespace="sales",
+            max_objects=10,
+            max_joins=10,
+        )
+        repeated_prefix = compile_context_prefix(
+            graph,
+            namespace="sales",
+            max_objects=10,
+            max_joins=10,
+        )
+        packet = compile_context(graph, "sales city", seed_limit=1, max_objects=3)
+        parts = split_context_packet(packet)
+
+        self.assertEqual(prefix.query, "")
+        self.assertEqual(prefix.canonical_json(), repeated_prefix.canonical_json())
+        self.assertEqual(prefix.retrieval_mode, "scope")
+        self.assertEqual(prefix.scope.mode, "graph_prefix")
+        self.assertEqual(
+            [item.label for item in prefix.objects],
+            ["sales.DimCustomer", "sales.DimGeography", "sales.FactSales"],
+        )
+        self.assertEqual(len(prefix.joins), 2)
+        self.assertEqual(parts.cache_key, packet.stable_hash)
+        self.assertEqual(json.loads(parts.stable_json)["stable_hash"], packet.stable_hash)
+        self.assertEqual(json.loads(parts.dynamic_json)["packet_hash"], packet.packet_hash)
+
+    def test_cli_compiles_a_query_independent_prefix(self) -> None:
+        graph = _context_graph(include_geography_fk=True)
+        with TemporaryDirectory() as temporary_directory:
+            store = FileGraphStore(Path(temporary_directory))
+            store.save(graph)
+            output = StringIO()
+            with (
+                patch("tarel.application.FileGraphStore", return_value=store),
+                redirect_stdout(output),
+            ):
+                exit_code = main(
+                    [
+                        "context",
+                        "prefix",
+                        "context_demo",
+                        "--namespace",
+                        "sales",
+                        "--format",
+                        "json",
+                    ]
+                )
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["stable"]["scope"]["mode"], "graph_prefix")
+        self.assertEqual(payload["dynamic"]["query"], "")
+        self.assertEqual(payload["dynamic"]["retrieval"]["mode"], "scope")
 
     def test_packet_has_no_volatile_runtime_metadata(self) -> None:
         result = compile_context(_context_graph(), "sales")

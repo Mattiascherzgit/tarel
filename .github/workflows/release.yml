@@ -67,10 +67,15 @@ jobs:
           cd "${{ runner.temp }}/tarel-smoke"
           "${{ runner.temp }}/tarel-release/bin/tarel" --version
           "${{ runner.temp }}/tarel-release/bin/tarel" demo create retail-dwh
-          "${{ runner.temp }}/tarel-release/bin/tarel" connector probe sqlite --config .tarel/demos/retail-dwh.toml --format json > probe.json
-          "${{ runner.temp }}/tarel-release/bin/tarel" graph build retail-demo --connector sqlite --config .tarel/demos/retail-dwh.toml --schema main --format json > graph.json
+          "${{ runner.temp }}/tarel-release/bin/tarel" source configure retail-local --connector sqlite --config-ref state:demos/retail-dwh.toml --namespace main --format json > source.json
+          "${{ runner.temp }}/tarel-release/bin/tarel" source check retail-local --format json > check.json
+          "${{ runner.temp }}/tarel-release/bin/tarel" source probe retail-local --format json > probe.json
+          "${{ runner.temp }}/tarel-release/bin/tarel" source build retail-local retail-demo --format json > graph.json
+          "${{ runner.temp }}/tarel-release/bin/tarel" grounding retail-demo "annual net sales by channel" --source retail-local --format json > grounding.json
           "${{ runner.temp }}/tarel-release/bin/python" -c 'import json; assert json.load(open("probe.json"))["read_only"] is True'
           "${{ runner.temp }}/tarel-release/bin/python" -c 'import json; assert json.load(open("graph.json"))["nodes"] == 70'
+          "${{ runner.temp }}/tarel-release/bin/python" -c 'import json; assert json.load(open("check.json"))["config_status"] == "resolved"'
+          "${{ runner.temp }}/tarel-release/bin/python" -c 'import json; assert json.load(open("grounding.json"))["stable"]["sources"][0]["source"] == "retail-local"'
       - name: Upload verified distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -66,6 +66,7 @@ only-include = [
   "docs/context-contract.md",
   "docs/local-retrieval.md",
   "docs/retail-demo.md",
+  "docs/sdk.md",
   "docs/workspaces.md",
   "pyproject.toml",
   "src",

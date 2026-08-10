@@ -125,8 +125,8 @@ create and test an isolated connector candidate from TAREL's contracts. A human 
 observed results before activation, so the installation can extend itself without silently changing
 the trusted kernel.
 
-> TAREL is pre-alpha software. The CLI and serialized contracts may still change during `0.x`.
-> A stable public SDK, native orchestration exporters, ETL run history, and semantic-standard
+> TAREL is pre-alpha software. The CLI, experimental SDK, and serialized contracts may still
+> change during `0.x`. Native orchestration exporters, ETL run history, and semantic-standard
 > interoperability are not part of the current release.
 
 ## Getting started
@@ -154,6 +154,47 @@ The embedding runtime is optional and isolated from the core. `tarel model downl
 explicit action; it downloads the pinned model, verifies its checksum, and never runs during
 package import.
 
+### Embed the same engine through Python
+
+The SDK calls the same application use cases as the CLI and requires an explicit local state root:
+
+```python
+from tarel.sdk import Tarel, WorkspaceScope
+
+tarel = Tarel(root="/path/to/project/.tarel")
+scope = WorkspaceScope(
+    systems=("commercial",),
+    areas=("analytics",),
+    zones=("revenue",),
+)
+
+bundle = tarel.grounding.context(
+    "customer revenue",
+    workspace="enterprise",
+    selection=scope,
+    sources=("warehouse-prod",),
+    lineages=("reporting", "dbt", "warehouse-etl"),
+    mode="bm25",
+)
+stable_system_prefix = bundle.stable_prompt()
+dynamic_turn_context = bundle.dynamic_prompt()
+view = tarel.view.workspace(
+    "enterprise",
+    lineages=("reporting", "dbt", "warehouse-etl"),
+    selection=scope,
+)
+```
+
+The `GroundingBundle` maps every selected object to a non-secret source target containing its graph
+revision, connector, catalog, source type, and SQL dialect. It combines a cache-friendly stable
+prefix with the dynamic question, retrieval decisions, visible omissions, optional lineage matches,
+and an exact upstream trace. Connection endpoints and credentials never enter this contract. The
+client does not change the working directory or invoke CLI subprocesses. Lower-level search results,
+context packets, lineage traces, focuses, and review records remain available as the same typed
+deterministic contracts used by CLI commands. The combined view projection contains both Space
+objects and Lineage flows, so a GUI can switch modes without rebuilding either model. See
+[the SDK guide](docs/sdk.md).
+
 ## Demo walkthrough
 
 The bundled Retail DWH is the safest way to try TAREL. It contains synthetic analytical data,
@@ -163,19 +204,24 @@ requires no credentials, and is created only when requested.
 
 ```bash
 tarel demo create retail-dwh
-tarel connector check sqlite
-tarel connector probe sqlite --config .tarel/demos/retail-dwh.toml
+tarel source configure retail-local \
+  --connector sqlite \
+  --config-ref state:demos/retail-dwh.toml \
+  --namespace main
+tarel source check retail-local
+tarel source probe retail-local
 ```
 
-The generated SQLite database and configuration live below the ignored `.tarel/` directory.
+The generated SQLite database, private configuration, and source registry live below the ignored
+`.tarel/` directory. A source profile stores only a logical name and a config reference, never the
+connection URL itself.
 
 Inspect the catalog or a bounded sample:
 
 ```bash
-tarel connector discover sqlite \
-  --config .tarel/demos/retail-dwh.toml \
-  --schema main
+tarel source discover retail-local
 
+# The lower-level connector interface remains available for explicit sampling.
 tarel connector sample sqlite \
   --config .tarel/demos/retail-dwh.toml \
   --schema main \
@@ -186,10 +232,7 @@ tarel connector sample sqlite \
 ### 2. Build the technical graph
 
 ```bash
-tarel graph build retail-demo \
-  --connector sqlite \
-  --config .tarel/demos/retail-dwh.toml \
-  --schema main
+tarel source build retail-local retail-demo
 
 tarel graph show retail-demo
 ```
@@ -408,6 +451,7 @@ The harness-facing surface stays explicit and composable:
 | Command | Purpose |
 |---|---|
 | `tarel demo` | Create deterministic local demo sources |
+| `tarel source` | Configure logical sources and probe, discover, build, or refresh through them |
 | `tarel connector` | Check, probe, discover, sample, and scaffold source connectors |
 | `tarel graph` | Build, refresh, inspect, and provider-annotate technical graphs |
 | `tarel focus` | Persist revision-bound report-to-source slices for demand-driven work |
@@ -418,6 +462,7 @@ The harness-facing surface stays explicit and composable:
 | `tarel index` | Build and inspect rebuildable local vector indexes |
 | `tarel search` | Retrieve relevant objects and fields through lexical, BM25, vector, or hybrid search |
 | `tarel context` | Build, compare, and impact-check deterministic agent context packets |
+| `tarel grounding` | Compile agent-ready context with source, dialect, and optional lineage identity |
 | `tarel workspace` | Organize graphs into systems, areas, schemas, and overlapping zones |
 | `tarel provider` | Configure, inspect, and test optional annotation providers |
 
@@ -456,6 +501,7 @@ controls without TAREL depending on that provider.
 Context size and trust are explicit CLI choices:
 
 ```bash
+# Small or large system: retrieve only a question-specific snippet.
 tarel context build retail-demo \
   "internet and reseller sales by year" \
   --mode hybrid \
@@ -467,9 +513,44 @@ tarel context build retail-demo \
   --max-characters 24000 \
   --format json > packet.json
 
+# Small graph or repeatedly used workspace zone: compile a query-independent prefix.
+tarel context prefix retail-demo \
+  --namespace main \
+  --max-objects 250 \
+  --max-characters 500000 \
+  --format json > retail-prefix.json
+
+tarel context prefix enterprise \
+  --workspace \
+  --system commercial \
+  --zone revenue \
+  --format json > revenue-prefix.json
+
 tarel context diff packet-a.json packet-b.json
 tarel context impact packet.json --graph retail-demo
 ```
+
+The Python SDK additionally exposes `tarel.context.split(packet)`. It returns a stable JSON block,
+a request-specific JSON block, and their hashes so an embedding application can place them in the
+appropriate system and user messages. `prefix_graph(...)` and `prefix_workspace(...)` return a
+complete query-independent packet for a selected graph, system, area, schema, or overlapping zone.
+
+For a BI-agent turn that also needs source routing and explicit lineage identity, compile the
+higher-level grounding contract:
+
+```bash
+tarel grounding enterprise "annual net sales" \
+  --workspace --system commercial --zone revenue \
+  --lineage reporting --lineage warehouse-etl \
+  --trace powerbi.Sales.Report.NetSales \
+  --mode hybrid --format json > grounding.json
+```
+
+`tarel.grounding.v0.1` preserves the context packet unchanged, then adds non-secret source targets,
+SQL dialects, selected lineage revisions, tolerant lineage matches, and an optional exact upstream
+trace. Its text form is split into a stable system-prefix block and a dynamic turn block. Evidence
+reasons and review state remain visible, while volatile evidence paths and connection details are
+excluded from the agent contract.
 
 TAREL deliberately does not invent TTLs, provider cache headers, or session affinity. Those remain
 harness concerns; the neutral packet supplies the deterministic boundaries needed to implement
@@ -566,14 +647,41 @@ is unknown. It can then edit the candidate, install only the source-specific dri
 `probe` and `discover_catalog` using real error output. This is the self-modifying loop: the tool
 provides the contract and evidence boundary; the coding agent supplies the source-specific code.
 
+After private-source testing and human review, activate the candidate as an ordinary Python
+package. TAREL discovers it only through the named `tarel.connectors` entry point:
+
+```bash
+python -m pip install .tarel/connectors/postgres-candidate
+tarel connector check postgres
+tarel source configure warehouse-prod \
+  --connector postgres \
+  --config-ref env:TAREL_WAREHOUSE_CONFIG \
+  --database warehouse \
+  --namespace analytics
+tarel source probe warehouse-prod
+tarel source build warehouse-prod warehouse-graph
+```
+
 Today, `scaffold` creates the complete authoring workspace but does not invoke an LLM by itself,
-register the candidate, or execute generated code. Integration and activation are explicit human
-decisions. That gate is intentional: self-extension should remove repetitive integration work,
-not turn unreviewed generated code into trusted infrastructure.
+install the candidate, or execute generated code. Installation and source registration are explicit
+human decisions. That gate is intentional: self-extension should remove repetitive integration
+work, not turn unreviewed generated code into trusted infrastructure.
+
+## Logical source registry
+
+A source profile connects a stable local name to one reviewed connector and one private config
+reference. `env:VARIABLE` resolves to a TOML path supplied by the host; `state:relative/path.toml`
+resolves only below the selected `.tarel` state directory. Raw URLs and path traversal are rejected.
+Profiles are always read-only and may be associated with one or more graphs.
+
+If exactly one registered source maps to a selected graph, grounding includes its logical name and
+source-profile revision automatically. Multiple mappings fail closed until the caller selects the
+intended profile with `--source NAME` or `sources=(NAME,)`. The grounding contract never contains
+the config reference or its resolved URL.
 
 ## Connector runtime
 
-Once approved and integrated, every connector uses the same small CLI surface:
+Built-in and installed connectors use the same small CLI surface:
 
 ```bash
 tarel connector check NAME

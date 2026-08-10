@@ -65,18 +65,29 @@ jobs:
           cd "$RUNNER_TEMP/tarel-smoke"
           "$RUNNER_TEMP/tarel-wheel/bin/tarel" --version
           "$RUNNER_TEMP/tarel-wheel/bin/tarel" demo create retail-dwh
-          "$RUNNER_TEMP/tarel-wheel/bin/tarel" connector probe sqlite \
-            --config .tarel/demos/retail-dwh.toml \
-            --format json > probe.json
-          "$RUNNER_TEMP/tarel-wheel/bin/tarel" graph build retail-demo \
+          "$RUNNER_TEMP/tarel-wheel/bin/tarel" source configure retail-local \
             --connector sqlite \
-            --config .tarel/demos/retail-dwh.toml \
-            --schema main \
+            --config-ref state:demos/retail-dwh.toml \
+            --namespace main \
+            --format json > source.json
+          "$RUNNER_TEMP/tarel-wheel/bin/tarel" source check retail-local \
+            --format json > check.json
+          "$RUNNER_TEMP/tarel-wheel/bin/tarel" source probe retail-local \
+            --format json > probe.json
+          "$RUNNER_TEMP/tarel-wheel/bin/tarel" source build retail-local retail-demo \
             --format json > graph.json
+          "$RUNNER_TEMP/tarel-wheel/bin/tarel" grounding retail-demo \
+            "annual net sales by channel" \
+            --source retail-local \
+            --format json > grounding.json
           "$RUNNER_TEMP/tarel-wheel/bin/python" -c \
             'import json; assert json.load(open("probe.json"))["read_only"] is True'
           "$RUNNER_TEMP/tarel-wheel/bin/python" -c \
             'import json; assert json.load(open("graph.json"))["nodes"] == 70'
+          "$RUNNER_TEMP/tarel-wheel/bin/python" -c \
+            'import json; assert json.load(open("check.json"))["config_status"] == "resolved"'
+          "$RUNNER_TEMP/tarel-wheel/bin/python" -c \
+            'import json; assert json.load(open("grounding.json"))["stable"]["sources"][0]["source"] == "retail-local"'
 
   secrets:
     name: Secret scan
