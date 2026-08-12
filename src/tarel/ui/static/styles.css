@@ -33,10 +33,9 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .skip-link:focus { left: 8px; }
 .shell { height: 100%; display: grid; grid-template-rows: 54px minmax(0, 1fr) 28px; }
 .topbar { background: var(--surface); border-bottom: 1px solid var(--line); display: grid; grid-template-columns: minmax(280px, 1fr) auto minmax(280px, 1fr); align-items: center; padding: 0 14px; }
-.brand { display: flex; align-items: center; gap: 10px; }
-.brand-mark { width: 29px; height: 29px; border-radius: 4px; display: grid; place-items: center; background: var(--indigo); font-size: 20px; font-weight: 800; }
+.brand { display: flex; align-items: center; }
 .brand strong, .brand small { display: block; }
-.brand strong { font-size: 15px; }
+.brand strong { font-size: 13px; line-height: 1.15; letter-spacing: .14em; }
 .brand small { color: var(--subtle); font: 9px/1.2 "JetBrains Mono", monospace; text-transform: uppercase; letter-spacing: .07em; }
 .view-tabs { display: flex; height: 36px; background: var(--black); border: 1px solid var(--line); padding: 3px; border-radius: 5px; }
 .tab { border: 0; background: transparent; padding: 0 14px; color: var(--muted); border-radius: 3px; }
