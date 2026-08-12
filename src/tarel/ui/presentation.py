@@ -454,6 +454,9 @@ def _object_payload(
     zones = tuple(getattr(scope_object, "zones", ()))
     return {
         "annotation": annotation,
+        "annotation_context_documents": node.metadata.get(
+            "annotation_context_documents", []
+        ),
         "area": area,
         "area_ref": f"{system}:{area}" if system and area else None,
         "catalog": graph.catalog,
@@ -485,6 +488,9 @@ def _object_payload(
 def _field_payload(node: GraphNode, graph_name: str) -> dict[str, object]:
     return {
         "annotation": node.annotation.to_dict() if node.annotation else None,
+        "annotation_context_documents": node.metadata.get(
+            "annotation_context_documents", []
+        ),
         "data_type": node.metadata.get("data_type"),
         "id": _ui_id(graph_name, node.id),
         "is_nullable": node.metadata.get("is_nullable"),
@@ -570,6 +576,7 @@ def _review_queue(objects: list[dict[str, object]]) -> list[dict[str, object]]:
         state = str(annotation["state"]) if isinstance(annotation, dict) else "missing"
         records.append({
             "annotation": annotation,
+            "context_documents": item.get("annotation_context_documents", []),
             "field_count": len(item["fields"]),
             "graph": item["graph"],
             "grain": item["grain"],

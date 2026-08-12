@@ -249,22 +249,22 @@ function renderGraph() {
     layout: state.canvasMode === "space" ? {name: "preset", fit: true, padding: 75} : {name: "breadthfirst", directed: true, fit: true, padding: 115, spacingFactor: 1.25, animate: !state.traceOnCanvas, animationDuration: 260},
     minZoom: .15, maxZoom: 2.3, wheelSensitivity: .18,
     style: [
-      {selector: "node", style: {"background-color": "#181818", "border-color": "#4a4a4a", "border-width": 1, "color": "#ddd", "font-family": "Inter, sans-serif", "font-size": 10, "label": "data(label)", "shape": "round-rectangle", "text-max-width": 104, "text-wrap": "ellipsis", "text-valign": "center", "width": 112, "height": 42}},
+      {selector: "node", style: {"background-color": "#181818", "border-color": "#5f5f68", "border-width": 1, "color": "#f4f4f5", "font-family": "Inter, sans-serif", "font-size": 11, "label": "data(label)", "shape": "round-rectangle", "text-max-width": 104, "text-wrap": "ellipsis", "text-valign": "center", "width": 112, "height": 42}},
       {selector: 'node[type = "view"]', style: {"border-color": "#22d3ee"}},
       {selector: 'node[type = "asset"]', style: {"background-color": "#10202a", "border-color": "#22d3ee", "shape": "diamond"}},
-      {selector: 'node[type = "procedure"], node[type = "query"], node[type = "script"]', style: {"background-color": "#251b38", "border-color": "#a78bfa", "shape": "hexagon"}},
+      {selector: 'node[type = "procedure"], node[type = "query"], node[type = "script"]', style: {"background-color": "#4a2d73", "border-color": "#d8b4fe", "color": "#faf5ff", "shape": "hexagon"}},
       {selector: 'node[type = "group-system"]', style: {"background-opacity": .05, "border-color": "#6366f1", "border-style": "solid", "border-width": 2, "label": "data(label)", "text-valign": "top", "text-halign": "center", "padding": 34, "shape": "round-rectangle", "font-size": 12}},
       {selector: 'node[type = "group-area"]', style: {"background-opacity": .035, "border-color": "#52525b", "border-style": "dashed", "label": "data(label)", "text-valign": "top", "padding": 25, "shape": "round-rectangle", "font-size": 10}},
       {selector: 'node[type = "group-schema"]', style: {"background-opacity": .02, "border-color": "#303038", "border-style": "dotted", "label": "data(label)", "text-valign": "top", "padding": 18, "shape": "round-rectangle", "font-size": 9}},
       {selector: 'node[state = "draft"], node[state = "review_required"]', style: {"border-color": "#f59e0b", "border-width": 2}},
       {selector: 'node[state = "validated"]', style: {"border-color": "#10b981", "border-width": 2}},
       {selector: "node:selected", style: {"background-color": "#24243a", "border-color": "#818cf8", "border-width": 3}},
-      {selector: "edge", style: {"curve-style": "bezier", "line-color": "#3f3f46", "target-arrow-color": "#3f3f46", "target-arrow-shape": "triangle", "width": 1, "opacity": .75}},
+      {selector: "edge", style: {"curve-style": "bezier", "line-color": "#52525b", "target-arrow-color": "#71717a", "target-arrow-shape": "triangle", "width": 1, "opacity": .85}},
       {selector: 'edge[type = "relationship_candidate"]', style: {"line-style": "dashed", "line-color": "#f59e0b", "target-arrow-color": "#f59e0b"}},
-      {selector: 'edge[type = "lineage"]', style: {"line-color": "#6366f1", "target-arrow-color": "#818cf8", "width": 2}},
+      {selector: 'edge[type = "lineage"]', style: {"line-color": "#818cf8", "target-arrow-color": "#a5b4fc", "width": 2.5, "opacity": .95}},
       {selector: 'edge[type = "process"]', style: {"line-style": "dashed", "line-color": "#22d3ee", "target-arrow-color": "#22d3ee"}},
       {selector: ".hidden", style: {"display": "none"}},
-      {selector: ".dimmed", style: {"opacity": .1}},
+      {selector: ".dimmed", style: {"opacity": .42}},
       {selector: ".zone-focus", style: {"background-color": "#252547", "border-color": "#818cf8", "opacity": 1}},
       {selector: ".trace-focus", style: {"opacity": 1, "border-color": "#10b981", "border-width": 3}},
     ],
@@ -513,9 +513,13 @@ function renderReviewEditor() {
   if (!record) { $("#review-editor").innerHTML = '<div class="empty-state"><h2>Queue complete</h2><p>No table-level proposals are waiting.</p></div>'; renderEvidence(null); return; }
   const annotation = record.annotation;
   const disabled = !state.data.editable || !annotation;
+  const contextDocuments = record.context_documents || [];
+  const documentById = new Map((state.data.knowledge_documents || []).map(item => [item.id, item]));
+  const availableDocuments = (record.available_context_document_ids || []).map(id => documentById.get(id)).filter(Boolean);
   $("#review-editor").innerHTML = `
     <div class="review-title"><div><p class="eyebrow">${escapeHtml(record.type)} annotation</p><h2>${escapeHtml(record.label)}</h2><p>${record.field_count} fields · ${stateLabel(record.state)}</p></div><span class="state-badge">${stateLabel(record.state)}</span></div>
     <div class="step-strip"><div class="step"><strong>1 · Read</strong>Understand the proposal</div><div class="step"><strong>2 · Check</strong>Compare evidence</div><div class="step"><strong>3 · Edit</strong>Correct meaning</div><div class="step"><strong>4 · Decide</strong>Approve or reject</div></div>
+    ${knowledgeContextPanel(record, contextDocuments, availableDocuments)}
     ${!annotation ? `<div class="missing-callout"><strong>No provider proposal exists for this table.</strong><p>Generate one with the configured provider or coding agent, then return here for review. Add a private connector configuration and sampling only when required.</p><code>${escapeHtml(annotationCommand(record))}</code></div>` : `
     <form id="annotation-form" class="editor-form">
       <label><span>Business description</span><textarea name="description" required ${disabled ? "disabled" : ""}>${escapeHtml(annotation.description)}</textarea></label>
@@ -528,6 +532,16 @@ function renderReviewEditor() {
     <div class="editor-actions"><button class="danger-button" data-review-action="reject" ${disabled ? "disabled" : ""}>Reject</button><button class="quiet-button" data-review-action="later">Later</button><button class="quiet-button" data-review-action="save" ${disabled ? "disabled" : ""}>Save edits</button><span class="spacer"></span><button class="primary-button" data-review-action="approve" ${disabled ? "disabled" : ""}>Approve &amp; next</button></div>`}`;
   $$('[data-review-action]').forEach(button => button.addEventListener("click", () => reviewAction(button.dataset.reviewAction)));
   renderEvidence(record);
+}
+
+function knowledgeContextPanel(record, used, available) {
+  const documents = used.length ? used : available;
+  return `<details class="knowledge-context" ${used.length ? "open" : ""}>
+    <summary><span>Knowledge context</span><small>${used.length} used · ${available.length} available now</small></summary>
+    <p>Reference documents are optional provider input, not automatically accepted evidence.</p>
+    <div class="knowledge-list">${documents.map(item => `<article><span><strong>${escapeHtml(item.title)}</strong><small>${escapeHtml(knowledgeScope(item.scope))} · ${escapeHtml(item.state)}${knowledgeRevisionState(item, used, available)}</small></span><code>${escapeHtml(item.revision.slice(0, 10))}</code></article>`).join("") || "<small>No scoped documents.</small>"}</div>
+    <div class="knowledge-options"><small>Off · default</small><code>${escapeHtml(annotationCommand(record))}</code><small>Scoped documents</small><code>${escapeHtml(annotationCommand(record, true))}</code></div>
+  </details>`;
 }
 
 async function reviewAction(action) {
@@ -560,7 +574,8 @@ function advanceReview(previousId) {
 function renderEvidence(record) {
   if (!record?.annotation) { $("#review-evidence").innerHTML = '<div class="empty-state"><h2>No evidence</h2><p>This object has no semantic proposal yet.</p></div>'; return; }
   const annotation = record.annotation;
-  $("#review-evidence").innerHTML = `<p class="eyebrow">Proposal context</p><h2>Evidence</h2>${annotation.evidence.map(item => `<article class="evidence-card"><strong>${escapeHtml(item.source)}</strong><span>${escapeHtml(item.reference)}</span>${item.value ? `<small>${escapeHtml(item.value)}</small>` : ""}${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ""}</article>`).join("") || '<p class="guidance">No explicit evidence was recorded.</p>'}<div class="provenance"><h3>Provenance</h3><p>${escapeHtml(annotation.provenance?.source || "unknown")}${annotation.provenance?.provider ? ` · ${escapeHtml(annotation.provenance.provider)}` : ""}${annotation.provenance?.model ? ` · ${escapeHtml(annotation.provenance.model)}` : ""}</p>${annotation.confidence_reason ? `<p>${escapeHtml(annotation.confidence_reason)}</p>` : ""}</div>`;
+  const documents = record.context_documents || [];
+  $("#review-evidence").innerHTML = `<p class="eyebrow">Proposal context</p><h2>Evidence</h2>${annotation.evidence.map(item => `<article class="evidence-card"><strong>${escapeHtml(item.source)}</strong><span>${escapeHtml(item.reference)}</span>${item.value ? `<small>${escapeHtml(item.value)}</small>` : ""}${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ""}</article>`).join("") || '<p class="guidance">No explicit evidence was recorded.</p>'}${documents.length ? `<div class="provenance"><h3>Documents supplied</h3>${documents.map(item => `<p><strong>${escapeHtml(item.title)}</strong><br><small>${escapeHtml(knowledgeScope(item.scope))} · ${escapeHtml(item.state)} · ${escapeHtml(item.revision.slice(0, 10))}</small></p>`).join("")}</div>` : ""}<div class="provenance"><h3>Provenance</h3><p>${escapeHtml(annotation.provenance?.source || "unknown")}${annotation.provenance?.provider ? ` · ${escapeHtml(annotation.provenance.provider)}` : ""}${annotation.provenance?.model ? ` · ${escapeHtml(annotation.provenance.model)}` : ""}</p>${annotation.confidence_reason ? `<p>${escapeHtml(annotation.confidence_reason)}</p>` : ""}</div>`;
 }
 
 function manualDocuments() {
@@ -663,14 +678,14 @@ async function trace(reference) {
   if (!state.data.lineages.length) { $("#lineage-drawer").hidden = false; $("#lineage-status").className = "notice error"; $("#lineage-status").textContent = "Restart with one or more --lineage options."; return; }
   $("#lineage-drawer").hidden = false; $("#lineage-reference").value = reference; $("#lineage-status").className = "notice"; $("#lineage-status").textContent = "Resolving selected lineage documents…";
   try {
-    const result = await api("/api/lineage/upstream", {reference, lineages: state.data.lineages, max_hops: 12, states: ["draft", "review_required", "validated"]});
+    const result = await api("/api/lineage/upstream", {reference, lineages: state.data.lineages, max_hops: 40, states: ["draft", "review_required", "validated"]});
     state.trace = result;
     state.traceOnCanvas = false;
     $("#show-trace-canvas").hidden = false;
     $("#lineage-title").textContent = result.start.reference;
     $("#lineage-status").textContent = `${result.hops.length} hops · ${result.origins.length} origins${result.truncated ? " · truncated" : ""}${result.warnings.length ? ` · ${result.warnings.join(" ")}` : ""}`;
     $("#lineage-origins").innerHTML = result.origins.map(item => `<span class="origin">Origin · ${escapeHtml(item.reference)}</span>`).join("");
-    $("#lineage-hops").innerHTML = result.hops.map(hop => `<article class="hop"><span class="hop-depth">${hop.depth}</span><span><strong>${escapeHtml(hop.source.reference)}</strong><small>${escapeHtml(hop.source.kind)}</small></span><span class="hop-relation">${escapeHtml(hop.relation)} →</span><span><strong>${escapeHtml(hop.target.reference)}</strong><small>${escapeHtml(hop.state)}${hop.via_definition ? ` · via ${escapeHtml(hop.via_definition)}` : ""}</small></span></article>`).join("") || '<div class="empty-state"><p>No upstream hops found.</p></div>';
+    $("#lineage-hops").innerHTML = result.hops.map(hop => `<article class="hop"><span class="hop-depth">${hop.depth}</span><span><strong>${escapeHtml(hop.source.reference)}</strong><small>${escapeHtml(hop.source.kind)}</small></span><span class="hop-relation">${escapeHtml(hop.relation)} →</span><span><strong>${escapeHtml(hop.target.reference)}</strong><small>${escapeHtml(hop.state)}${hop.via_definition ? ` · via ${escapeHtml(hop.via_definition)}` : ""}</small>${hop.evidence?.reason ? `<small class="hop-evidence">Evidence · ${escapeHtml(hop.evidence.reason)}</small>` : ""}${hop.write_evidence?.reason ? `<small class="hop-evidence">Write · ${escapeHtml(hop.write_evidence.reason)}</small>` : ""}</span></article>`).join("") || '<div class="empty-state"><p>No upstream hops found.</p></div>';
   } catch (error) { state.trace = null; state.traceOnCanvas = false; $("#show-trace-canvas").hidden = true; $("#lineage-status").className = "notice error"; $("#lineage-status").textContent = error.message; $("#lineage-origins").innerHTML = ""; $("#lineage-hops").innerHTML = ""; }
 }
 
@@ -717,10 +732,20 @@ function mostConnectedObject(objects = state.data.objects) {
   return [...degree].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] || objects[0]?.id;
 }
 function annotationText(item) { return `${item.annotation?.description || ""} ${(item.annotation?.synonyms || []).join(" ")}`.toLowerCase(); }
-function annotationCommand(record) {
+function annotationCommand(record, scopedKnowledge = false) {
   const focus = focusMembership(record.id)[0];
   const scope = focus ? `--focus ${shellArg(focus)}` : shellArg(record.graph);
-  return `tarel annotation next ${scope} --object ${shellArg(record.label)}`;
+  const workspace = state.data.scope?.workspace;
+  const knowledge = scopedKnowledge ? ` --knowledge scoped${workspace ? ` --knowledge-workspace ${shellArg(workspace)}` : ""}` : " --knowledge none";
+  const includeAnnotated = record.annotation ? " --include-annotated" : "";
+  return `tarel annotation next ${scope} --object ${shellArg(record.label)}${includeAnnotated}${knowledge}`;
+}
+function knowledgeScope(scope) { return scope.kind === "global" ? "global" : scope.workspace ? `${scope.kind}:${scope.workspace}:${scope.reference}` : scope.graph ? `${scope.kind}:${scope.graph}:${scope.reference}` : `${scope.kind}:${scope.reference}`; }
+function knowledgeRevisionState(item, used, available) {
+  if (!used.length) return "";
+  const current = available.find(candidate => candidate.id === item.id);
+  if (!current) return " · no longer registered";
+  return current.revision === item.revision ? " · current" : " · changed since proposal";
 }
 function shellArg(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function stateLabel(value) { return ({draft: "Draft", review_required: "Review required", deferred: "Deferred", validated: "Approved", rejected: "Removed", missing: "Missing"})[value] || value; }

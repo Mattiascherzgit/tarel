@@ -14,6 +14,7 @@ from tarel import __version__
 from tarel.annotations.contracts import AnnotationFailure, AnnotationTask
 from tarel.annotations.review import AnnotationReviewRecord
 from tarel.application import (
+    add_knowledge_document_use_case,
     add_relationship_use_case,
     add_workspace_relationship_use_case,
     apply_annotation_use_case,
@@ -46,16 +47,19 @@ from tarel.application import (
     list_annotation_reviews_use_case,
     list_focuses_use_case,
     list_graphs_use_case,
+    list_knowledge_documents_use_case,
     list_provider_names_use_case,
     list_relationships_use_case,
     list_workspaces_use_case,
     load_focus_use_case,
     load_graph_use_case,
+    load_knowledge_document_use_case,
     load_workspace_use_case,
     plan_annotations_use_case,
     plan_focus_annotations_use_case,
     probe_connector_use_case,
     refresh_graph_use_case,
+    resolve_knowledge_use_case,
     resolve_workspace_scope_use_case,
     retrieval_index_status_use_case,
     run_annotation_batch_use_case,
@@ -84,6 +88,10 @@ from tarel.grounding import GroundingBundle
 from tarel.grounding_application import (
     compile_graph_grounding_use_case,
     compile_workspace_grounding_use_case,
+)
+from tarel.knowledge.contracts import (
+    DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
+    KnowledgeFailure,
 )
 from tarel.lineage.cli import add_lineage_commands, dispatch_lineage
 from tarel.lineage.contracts import LineageFailure
@@ -409,6 +417,61 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--object", dest="object_name", required=True)
     sample.add_argument("--limit", type=int, default=3)
     _add_format_argument(sample)
+
+    knowledge = subcommands.add_parser(
+        "knowledge",
+        help="Attach bounded Markdown or text references to annotation scopes.",
+    )
+    knowledge_commands = knowledge.add_subparsers(dest="knowledge_command")
+
+    knowledge_add = knowledge_commands.add_parser(
+        "add",
+        help="Import one local reference document into private TAREL state.",
+    )
+    knowledge_add.add_argument("id")
+    knowledge_add.add_argument("path", type=Path)
+    knowledge_add.add_argument(
+        "--scope",
+        required=True,
+        help=(
+            "global, system:NAME, graph:NAME, schema:GRAPH:NAMESPACE, "
+            "or object:GRAPH:OBJECT"
+        ),
+    )
+    knowledge_add.add_argument("--title")
+    knowledge_add.add_argument("--state", choices=("draft", "validated"), default="draft")
+    knowledge_add.add_argument("--workspace", help="Validate a system scope.")
+    knowledge_add.add_argument("--replace", action="store_true")
+    _add_format_argument(knowledge_add)
+
+    knowledge_list = knowledge_commands.add_parser(
+        "list",
+        help="List registered knowledge without printing its content.",
+    )
+    _add_format_argument(knowledge_list)
+
+    knowledge_show = knowledge_commands.add_parser(
+        "show",
+        help="Show one registered document and its content.",
+    )
+    knowledge_show.add_argument("id")
+    _add_format_argument(knowledge_show)
+
+    knowledge_resolve = knowledge_commands.add_parser(
+        "resolve",
+        help="Preview the exact bounded knowledge context for one object.",
+    )
+    knowledge_resolve.add_argument("graph")
+    knowledge_resolve.add_argument("object")
+    knowledge_resolve.add_argument("--workspace")
+    knowledge_resolve.add_argument("--mode", choices=("none", "scoped"), default="scoped")
+    knowledge_resolve.add_argument("--document", action="append", dest="documents")
+    knowledge_resolve.add_argument(
+        "--max-characters",
+        type=int,
+        default=DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
+    )
+    _add_format_argument(knowledge_resolve)
 
     provider = subcommands.add_parser("provider", help="Configure optional annotation providers.")
     provider_commands = provider.add_subparsers(dest="provider_command")
@@ -759,6 +822,7 @@ def build_parser() -> argparse.ArgumentParser:
     graph_annotate.add_argument("--config", type=Path, help="Private connector configuration.")
     graph_annotate.add_argument("--include-annotated", action="store_true")
     graph_annotate.add_argument("--dry-run", action="store_true")
+    _add_annotation_knowledge_arguments(graph_annotate)
     _add_format_argument(graph_annotate)
 
     annotation = subcommands.add_parser(
@@ -777,6 +841,7 @@ def build_parser() -> argparse.ArgumentParser:
     annotation_plan.add_argument("--object", action="append", dest="objects")
     annotation_plan.add_argument("--limit", type=int)
     annotation_plan.add_argument("--include-annotated", action="store_true")
+    _add_annotation_knowledge_arguments(annotation_plan)
     _add_format_argument(annotation_plan)
 
     annotation_next = annotation_commands.add_parser(
@@ -787,8 +852,10 @@ def build_parser() -> argparse.ArgumentParser:
     annotation_next.add_argument("--focus", help="Return the next task inside this focus.")
     annotation_next.add_argument("--namespace", "--schema", dest="namespace")
     annotation_next.add_argument("--object", action="append", dest="objects")
+    annotation_next.add_argument("--include-annotated", action="store_true")
     annotation_next.add_argument("--samples", type=int, default=0)
     annotation_next.add_argument("--config", type=Path, help="Private connector configuration.")
+    _add_annotation_knowledge_arguments(annotation_next)
 
     annotation_apply = annotation_commands.add_parser(
         "apply",
@@ -1266,6 +1333,46 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render_sample(result, output_format=args.format)
             return 0
 
+        if args.command == "knowledge" and args.knowledge_command == "add":
+            result = add_knowledge_document_use_case(
+                args.id,
+                args.path,
+                scope_reference=args.scope,
+                title=args.title,
+                state=args.state,
+                workspace_name=args.workspace,
+                replace_existing=args.replace,
+            )
+            payload = {**result.document.to_dict(include_content=False), "path": str(result.path)}
+            _render_knowledge(payload, output_format=args.format)
+            return 0
+
+        if args.command == "knowledge" and args.knowledge_command == "list":
+            documents = list_knowledge_documents_use_case()
+            payload = {
+                "count": len(documents),
+                "documents": [item.to_dict(include_content=False) for item in documents],
+            }
+            _render_knowledge(payload, output_format=args.format)
+            return 0
+
+        if args.command == "knowledge" and args.knowledge_command == "show":
+            document = load_knowledge_document_use_case(args.id)
+            _render_knowledge(document.to_dict(), output_format=args.format)
+            return 0
+
+        if args.command == "knowledge" and args.knowledge_command == "resolve":
+            context = resolve_knowledge_use_case(
+                args.graph,
+                args.object,
+                mode=args.mode,
+                document_ids=tuple(args.documents or ()),
+                workspace_name=args.workspace,
+                max_characters=args.max_characters,
+            )
+            _render_knowledge(context.to_dict(), output_format=args.format)
+            return 0
+
         if args.command == "provider" and args.provider_command == "list":
             results = tuple(
                 check_provider_use_case(name) for name in list_provider_names_use_case()
@@ -1367,6 +1474,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_path=args.model_path,
                 batch_size=args.batch_size,
                 n_threads=args.n_threads,
+                progress=_index_build_progress,
             )
             payload = {"index": result.metadata.to_dict(), "path": str(result.path)}
             if args.format == "json":
@@ -1643,12 +1751,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "graph" and args.graph_command == "annotate":
             objects = set(args.objects or [])
-            if args.samples:
-                print(
-                    f"warning: up to {args.samples} sampled rows per object will be "
-                    f"sent to provider profile {args.provider}",
-                    file=sys.stderr,
-                )
             if args.dry_run:
                 tasks = plan_annotations_use_case(
                     args.name,
@@ -1658,9 +1760,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                     missing_only=not args.include_annotated,
                     sample_limit=args.samples,
                     config_path=args.config,
+                    knowledge_mode=args.knowledge,
+                    knowledge_document_ids=tuple(args.knowledge_documents or ()),
+                    knowledge_workspace=args.knowledge_workspace,
+                    max_knowledge_characters=args.max_knowledge_characters,
                 )
                 _render_annotation_plan(tasks, output_format=args.format)
                 return 0
+            if args.samples:
+                print(
+                    f"warning: up to {args.samples} sampled rows per object will be "
+                    f"sent to provider profile {args.provider}",
+                    file=sys.stderr,
+                )
+            if args.knowledge == "scoped" or args.knowledge_documents:
+                print(
+                    "warning: bounded knowledge documents will be sent to "
+                    f"provider profile {args.provider}",
+                    file=sys.stderr,
+                )
             result = run_annotation_batch_use_case(
                 args.name,
                 provider_name=args.provider,
@@ -1677,6 +1795,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout=args.timeout,
                 sample_limit=args.samples,
                 config_path=args.config,
+                knowledge_mode=args.knowledge,
+                knowledge_document_ids=tuple(args.knowledge_documents or ()),
+                knowledge_workspace=args.knowledge_workspace,
+                max_knowledge_characters=args.max_knowledge_characters,
                 progress=_print_annotation_progress,
             )
             payload = {**result.run.to_dict(), "graph": result.graph.name, "path": str(result.path)}
@@ -1699,6 +1821,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     objects=set(args.objects or []),
                     limit=args.limit,
                     missing_only=not args.include_annotated,
+                    knowledge_mode=args.knowledge,
+                    knowledge_document_ids=tuple(args.knowledge_documents or ()),
+                    knowledge_workspace=args.knowledge_workspace,
+                    max_knowledge_characters=args.max_knowledge_characters,
                 )
             else:
                 tasks = plan_annotations_use_case(
@@ -1707,6 +1833,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     objects=set(args.objects or []),
                     limit=args.limit,
                     missing_only=not args.include_annotated,
+                    knowledge_mode=args.knowledge,
+                    knowledge_document_ids=tuple(args.knowledge_documents or ()),
+                    knowledge_workspace=args.knowledge_workspace,
+                    max_knowledge_characters=args.max_knowledge_characters,
                 )
             _render_annotation_plan(tasks, output_format=args.format)
             return 0
@@ -1719,14 +1849,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "in the coding-agent task",
                     file=sys.stderr,
                 )
+            if args.knowledge == "scoped" or args.knowledge_documents:
+                print(
+                    "warning: bounded knowledge documents will be included in the "
+                    "coding-agent task",
+                    file=sys.stderr,
+                )
             if args.focus:
                 tasks = plan_focus_annotations_use_case(
                     args.focus,
                     namespace=args.namespace,
                     objects=set(args.objects or []),
                     limit=1,
+                    missing_only=not args.include_annotated,
                     sample_limit=args.samples,
                     config_path=args.config,
+                    knowledge_mode=args.knowledge,
+                    knowledge_document_ids=tuple(args.knowledge_documents or ()),
+                    knowledge_workspace=args.knowledge_workspace,
+                    max_knowledge_characters=args.max_knowledge_characters,
                 )
             else:
                 tasks = plan_annotations_use_case(
@@ -1734,8 +1875,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     namespace=args.namespace,
                     objects=set(args.objects or []),
                     limit=1,
+                    missing_only=not args.include_annotated,
                     sample_limit=args.samples,
                     config_path=args.config,
+                    knowledge_mode=args.knowledge,
+                    knowledge_document_ids=tuple(args.knowledge_documents or ()),
+                    knowledge_workspace=args.knowledge_workspace,
+                    max_knowledge_characters=args.max_knowledge_characters,
                 )
             if not tasks:
                 print(json.dumps({"status": "complete"}, indent=2, sort_keys=True))
@@ -1879,6 +2025,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         DemoFailure,
         FocusFailure,
         GraphFailure,
+        KnowledgeFailure,
         LineageFailure,
         ProviderFailure,
         RelationshipFailure,
@@ -1900,6 +2047,30 @@ def _add_format_argument(parser: argparse.ArgumentParser) -> None:
         choices=("text", "json"),
         default="text",
         help="Output format (default: text).",
+    )
+
+
+def _add_annotation_knowledge_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--knowledge",
+        choices=("none", "scoped"),
+        default="none",
+        help="Include no automatic documents (default) or resolve matching scopes.",
+    )
+    parser.add_argument(
+        "--knowledge-document",
+        action="append",
+        dest="knowledge_documents",
+        help="Include one document explicitly; repeat for more.",
+    )
+    parser.add_argument(
+        "--knowledge-workspace",
+        help="Workspace used to resolve system-scoped documents.",
+    )
+    parser.add_argument(
+        "--max-knowledge-characters",
+        type=int,
+        default=DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
     )
 
 
@@ -2419,6 +2590,9 @@ def _render_annotation_plan(
                     "count": len(tasks),
                     "tasks": [
                         {
+                            "context_documents": [
+                                item.to_dict() for item in task.context_documents
+                            ],
                             "graph_name": task.graph_name,
                             "id": task.id,
                             "target": task.target_label,
@@ -2435,6 +2609,52 @@ def _render_annotation_plan(
     print(f"Annotation tasks: {len(tasks)}")
     for task in tasks:
         print(f"{task.id}  {task.graph_name}:{task.target_label}")
+
+
+def _render_knowledge(payload: dict[str, object], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    documents = payload.get("documents")
+    if isinstance(documents, list):
+        print(f"Knowledge documents: {len(documents)}")
+        for item in documents:
+            if not isinstance(item, dict):
+                continue
+            scope = item.get("scope")
+            scope_label = _knowledge_scope_label(scope) if isinstance(scope, dict) else "unknown"
+            print(
+                f"- {item.get('id')} [{item.get('state')}; {scope_label}; "
+                f"{item.get('characters', 0)} chars]"
+            )
+        omitted = payload.get("omitted")
+        if isinstance(omitted, list) and omitted:
+            print(f"Omitted by budget: {', '.join(str(item) for item in omitted)}")
+        return
+    scope = payload.get("scope")
+    print(f"Knowledge: {payload.get('id', 'resolved context')}")
+    if payload.get("title"):
+        print(f"Title: {payload['title']}")
+    if isinstance(scope, dict):
+        print(f"Scope: {_knowledge_scope_label(scope)}")
+    if payload.get("state"):
+        print(f"State: {payload['state']}")
+    if payload.get("revision"):
+        print(f"Revision: {payload['revision']}")
+    if payload.get("content"):
+        print("\n" + str(payload["content"]))
+
+
+def _knowledge_scope_label(scope: dict[str, object]) -> str:
+    kind = str(scope.get("kind") or "unknown")
+    graph = scope.get("graph")
+    reference = scope.get("reference")
+    workspace = scope.get("workspace")
+    if kind == "global":
+        return "global"
+    if kind == "system" and workspace:
+        return f"system:{workspace}:{reference}"
+    return f"{kind}:{graph}:{reference}" if graph else f"{kind}:{reference}"
 
 
 def _render_focus(
@@ -2591,3 +2811,12 @@ def _model_download_progress(downloaded: int, total: int) -> None:
     if downloaded == total or downloaded // interval != previous // interval:
         percentage = min(100, round(downloaded * 100 / max(total, 1)))
         print(f"Downloading embedding model: {percentage}%", file=sys.stderr)
+
+
+def _index_build_progress(completed: int, total: int, phase: str) -> None:
+    if phase == "embedding":
+        print(f"Indexing embeddings: {completed}/{total}", file=sys.stderr)
+    elif phase == "writing":
+        print("Writing retrieval index...", file=sys.stderr)
+    elif phase == "ready":
+        print("Retrieval index ready.", file=sys.stderr)

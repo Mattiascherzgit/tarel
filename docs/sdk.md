@@ -204,6 +204,48 @@ cached_scope = tarel.context.prefix_workspace(
 Passing both `selection=...` and individual scope filters fails visibly instead of silently
 combining two potentially different privacy or caching boundaries.
 
+## Attach annotation knowledge
+
+Reference documents stay outside graph contracts. They are copied into local TAREL state with a
+content hash and assigned to a global, system, graph, schema, or object scope. System scopes are
+bound to their validated workspace:
+
+```python
+tarel.knowledge.add(
+    "commercial-terms",
+    "docs/commercial-terms.md",
+    scope="system:commercial",
+    workspace="enterprise",
+    state="validated",
+)
+tarel.knowledge.add(
+    "sales-grain",
+    "docs/sales-grain.md",
+    scope="object:warehouse:mart.FactSales",
+    state="validated",
+)
+
+preview = tarel.knowledge.resolve(
+    "warehouse",
+    "mart.FactSales",
+    workspace="enterprise",
+)
+task = tarel.annotation.plan_graph(
+    "warehouse",
+    objects={"mart.FactSales"},
+    knowledge="scoped",
+    knowledge_workspace="enterprise",
+)[0]
+```
+
+Annotation planning defaults to `knowledge="none"`. `scoped` adds matching documents; explicit
+document IDs can be passed with `knowledge_documents=(...)`. Explicit documents receive budget
+first; automatic matches prioritize object, schema, and graph knowledge over broader scopes. The
+character budget bounds the exact provider input. The
+resulting annotation metadata records only the selected document ID, scope,
+state, revision, character count, and truncation flag. Knowledge content is untrusted reference
+data and is explicitly separated from provider instructions.
+
 ## Retrieve context
 
 ```python

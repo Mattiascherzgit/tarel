@@ -75,6 +75,7 @@ def run_annotation_batch(
                     task_id=task.id,
                     target_id=task.target_id,
                     annotation=ObjectAnnotationProposal.from_dict(raw),
+                    context_documents=task.context_documents,
                 )
                 current_graph = apply_annotation_proposal(
                     current_graph,
@@ -82,6 +83,7 @@ def run_annotation_batch(
                     source="provider",
                     provider=provider.name,
                     model=model or provider.default_model,
+                    context_documents=task.context_documents,
                 )
             except (AnnotationFailure, ProviderFailure) as exc:
                 failed += 1
@@ -151,8 +153,14 @@ def _validate_generated_proposal(
         task_id=task.id,
         target_id=task.target_id,
         annotation=ObjectAnnotationProposal.from_dict(raw),
+        context_documents=task.context_documents,
     )
-    apply_annotation_proposal(graph, envelope, source="provider-validation")
+    apply_annotation_proposal(
+        graph,
+        envelope,
+        source="provider-validation",
+        context_documents=task.context_documents,
+    )
 
 
 def _correction_request(

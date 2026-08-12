@@ -15,10 +15,12 @@ from tarel.application import (
     FocusBuildResult,
     GraphBuildResult,
     GraphRefreshResult,
+    KnowledgeChangeResult,
     RelationshipChangeResult,
     RelationshipDiscoveryResult,
     WorkspaceChangeResult,
     WorkspaceRelationshipChangeResult,
+    add_knowledge_document_use_case,
     add_relationship_use_case,
     add_workspace_relationship_use_case,
     apply_annotation_use_case,
@@ -46,14 +48,17 @@ from tarel.application import (
     list_annotation_reviews_use_case,
     list_focuses_use_case,
     list_graphs_use_case,
+    list_knowledge_documents_use_case,
     list_relationships_use_case,
     list_workspaces_use_case,
     load_focus_use_case,
     load_graph_use_case,
+    load_knowledge_document_use_case,
     load_workspace_use_case,
     plan_annotations_use_case,
     plan_focus_annotations_use_case,
     refresh_graph_use_case,
+    resolve_knowledge_use_case,
     resolve_workspace_scope_use_case,
     retrieval_index_status_use_case,
     run_annotation_batch_use_case,
@@ -74,6 +79,11 @@ from tarel.grounding_application import (
     compile_graph_grounding_use_case,
     compile_workspace_grounding_use_case,
     describe_grounding_asset_use_case,
+)
+from tarel.knowledge.contracts import (
+    DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
+    KnowledgeContext,
+    KnowledgeDocument,
 )
 from tarel.lineage.application import (
     LineageChangeResult,
@@ -140,6 +150,7 @@ class Tarel:
         "graph",
         "grounding",
         "index",
+        "knowledge",
         "lineage",
         "model",
         "relationship",
@@ -164,6 +175,7 @@ class Tarel:
         self.relationship = RelationshipAPI(self.runtime)
         self.model = ModelAPI(self.runtime)
         self.index = IndexAPI(self.runtime)
+        self.knowledge = KnowledgeAPI(self.runtime)
         self.view = ViewAPI(self.runtime)
 
     @property
@@ -1275,6 +1287,10 @@ class AnnotationAPI(_RuntimeAPI):
         missing_only: bool = True,
         sample_limit: int = 0,
         config: str | Path | None = None,
+        knowledge: str = "none",
+        knowledge_documents: tuple[str, ...] = (),
+        knowledge_workspace: str | None = None,
+        max_knowledge_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
     ) -> tuple[AnnotationTask, ...]:
         return plan_annotations_use_case(
             name,
@@ -1284,6 +1300,10 @@ class AnnotationAPI(_RuntimeAPI):
             missing_only=missing_only,
             sample_limit=sample_limit,
             config_path=_optional_path(config),
+            knowledge_mode=knowledge,
+            knowledge_document_ids=knowledge_documents,
+            knowledge_workspace=knowledge_workspace,
+            max_knowledge_characters=max_knowledge_characters,
             runtime=self._runtime,
         )
 
@@ -1297,6 +1317,10 @@ class AnnotationAPI(_RuntimeAPI):
         missing_only: bool = True,
         sample_limit: int = 0,
         config: str | Path | None = None,
+        knowledge: str = "none",
+        knowledge_documents: tuple[str, ...] = (),
+        knowledge_workspace: str | None = None,
+        max_knowledge_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
     ) -> tuple[AnnotationTask, ...]:
         return plan_focus_annotations_use_case(
             name,
@@ -1306,6 +1330,10 @@ class AnnotationAPI(_RuntimeAPI):
             missing_only=missing_only,
             sample_limit=sample_limit,
             config_path=_optional_path(config),
+            knowledge_mode=knowledge,
+            knowledge_document_ids=knowledge_documents,
+            knowledge_workspace=knowledge_workspace,
+            max_knowledge_characters=max_knowledge_characters,
             runtime=self._runtime,
         )
 
@@ -1394,6 +1422,10 @@ class AnnotationAPI(_RuntimeAPI):
         timeout: float = 120.0,
         sample_limit: int = 0,
         config: str | Path | None = None,
+        knowledge: str = "none",
+        knowledge_documents: tuple[str, ...] = (),
+        knowledge_workspace: str | None = None,
+        max_knowledge_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
         progress: Callable[[int, int, str, str], None] | None = None,
     ) -> AnnotationBatchResult:
         return run_annotation_batch_use_case(
@@ -1412,7 +1444,61 @@ class AnnotationAPI(_RuntimeAPI):
             timeout=timeout,
             sample_limit=sample_limit,
             config_path=_optional_path(config),
+            knowledge_mode=knowledge,
+            knowledge_document_ids=knowledge_documents,
+            knowledge_workspace=knowledge_workspace,
+            max_knowledge_characters=max_knowledge_characters,
             progress=progress,
+            runtime=self._runtime,
+        )
+
+
+class KnowledgeAPI(_RuntimeAPI):
+    def add(
+        self,
+        document_id: str,
+        path: str | Path,
+        *,
+        scope: str,
+        title: str | None = None,
+        state: str = "draft",
+        workspace: str | None = None,
+        replace: bool = False,
+    ) -> KnowledgeChangeResult:
+        return add_knowledge_document_use_case(
+            document_id,
+            Path(path),
+            scope_reference=scope,
+            title=title,
+            state=state,
+            workspace_name=workspace,
+            replace_existing=replace,
+            runtime=self._runtime,
+        )
+
+    def list(self) -> tuple[KnowledgeDocument, ...]:
+        return list_knowledge_documents_use_case(runtime=self._runtime)
+
+    def load(self, document_id: str) -> KnowledgeDocument:
+        return load_knowledge_document_use_case(document_id, runtime=self._runtime)
+
+    def resolve(
+        self,
+        graph: str,
+        object_reference: str,
+        *,
+        mode: str = "scoped",
+        documents: tuple[str, ...] = (),
+        workspace: str | None = None,
+        max_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
+    ) -> KnowledgeContext:
+        return resolve_knowledge_use_case(
+            graph,
+            object_reference,
+            mode=mode,
+            document_ids=documents,
+            workspace_name=workspace,
+            max_characters=max_characters,
             runtime=self._runtime,
         )
 
@@ -1542,12 +1628,14 @@ class IndexAPI(_RuntimeAPI):
         model_path: str | Path | None = None,
         batch_size: int = 16,
         n_threads: int | None = None,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> IndexBuildResult:
         return build_retrieval_index_use_case(
             graph,
             model_path=_optional_path(model_path),
             batch_size=batch_size,
             n_threads=n_threads,
+            progress=progress,
             runtime=self._runtime,
         )
 

@@ -161,6 +161,7 @@ main { min-height: 0; }
 .hop-depth { color: var(--subtle); font: 10px "JetBrains Mono", monospace; }
 .hop-relation { color: var(--indigo-bright); font: 9px "JetBrains Mono", monospace; text-align: center; }
 .hop small { display: block; color: var(--subtle); }
+.hop .hop-evidence { margin-top: 4px; color: var(--muted); line-height: 1.35; }
 .manual-lineage-section { margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--line); }
 .manual-lineage-list { display: grid; gap: 10px; margin-top: 10px; }
 .manual-document { border: 1px solid var(--line); background: var(--black); }
@@ -209,6 +210,19 @@ main { min-height: 0; }
 .checkbox input { width: auto; }
 .missing-callout { padding: 14px; border: 1px solid rgb(245 158 11 / 40%); background: rgb(245 158 11 / 7%); color: #fcd34d; }
 .missing-callout code { display: block; margin-top: 8px; color: var(--text); }
+.knowledge-context { margin-bottom: 15px; border: 1px solid var(--line); background: var(--surface); }
+.knowledge-context summary { display: flex; justify-content: space-between; gap: 10px; padding: 9px 11px; cursor: pointer; }
+.knowledge-context summary small, .knowledge-context > p { color: var(--subtle); }
+.knowledge-context > p, .knowledge-context > code { display: block; margin: 0 11px 10px; font-size: 10px; }
+.knowledge-context > code { overflow-wrap: anywhere; color: var(--muted); }
+.knowledge-list { display: grid; margin: 0 11px 10px; border: 1px solid var(--line); }
+.knowledge-list article { display: flex; justify-content: space-between; gap: 8px; padding: 7px; border-bottom: 1px solid var(--line); }
+.knowledge-list article:last-child { border-bottom: 0; }
+.knowledge-list strong, .knowledge-list small { display: block; }
+.knowledge-list small, .knowledge-list code { color: var(--subtle); font-size: 9px; }
+.knowledge-options { display: grid; gap: 5px; margin: 0 11px 10px; }
+.knowledge-options small { color: var(--subtle); font-size: 9px; font-weight: 700; }
+.knowledge-options code { overflow-wrap: anywhere; color: var(--muted); font-size: 10px; }
 .evidence-pane { padding: 18px 15px; }
 .evidence-card { margin-top: 10px; padding: 10px; background: var(--surface-low); border: 1px solid var(--line); }
 .evidence-card strong, .evidence-card span, .evidence-card small { display: block; }

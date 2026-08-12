@@ -2,6 +2,7 @@
 
 from tarel.context_caching import ContextCacheParts
 from tarel.grounding import GroundingAsset, GroundingBundle, LineageTarget, SourceTarget
+from tarel.knowledge.contracts import KnowledgeContext, KnowledgeDocument, KnowledgeReference
 from tarel.runtime import TarelRuntime
 from tarel.sdk.client import Tarel
 from tarel.sources.application import SourceCheck
@@ -13,6 +14,9 @@ __all__ = [
     "GroundingAsset",
     "GroundingBundle",
     "LineageTarget",
+    "KnowledgeContext",
+    "KnowledgeDocument",
+    "KnowledgeReference",
     "SourceTarget",
     "SourceCheck",
     "SourceProfile",

@@ -87,6 +87,10 @@ Lineage keeps different evidence separate:
 - read/write claims describe **where data flows**;
 - review state describes **how much the claim is trusted**.
 
+The text, JSON, SDK, and browser trace also expose the evidence attached to each hop. Importers can
+therefore retain compact DAX expressions, compiled SQL, or exact manifest bindings instead of
+reducing a report-to-source path to unexplained arrows.
+
 This prevents a scheduler dependency from silently becoming invented table lineage.
 
 ## Human in the loop
@@ -99,6 +103,28 @@ confidence available.
 
 *Review, edit, approve, defer, or reject semantic proposals without sending the graph to a hosted
 UI. The browser makes no external requests.*
+
+Existing Markdown or text documentation can be attached as optional annotation context at global,
+system, graph, schema, or object scope. TAREL resolves a deterministic, bounded set for each object;
+the default remains `--knowledge none`, so documents are never sent to a provider implicitly.
+System scopes are bound to the workspace supplied when the document is registered. When the
+budget is tight, the most specific scopes receive space first; retained documents are still
+serialized in stable broad-to-narrow order. Explicit `--knowledge-document` selections take
+priority over automatic scope matches.
+
+```bash
+tarel knowledge add commercial-terms docs/commercial-terms.md \
+  --scope system:commercial --workspace enterprise --state validated
+tarel knowledge add sales-grain docs/sales-grain.md \
+  --scope object:warehouse:mart.FactSales --state validated
+
+tarel annotation next warehouse --object mart.FactSales \
+  --knowledge scoped --knowledge-workspace enterprise
+```
+
+The task and resulting annotation retain document IDs, scopes, states, and revisions—not source
+paths. The review UI shows which documents were supplied while keeping them distinct from accepted
+evidence. This is intentionally a small reference layer, not a document-management system.
 
 ## Install
 
@@ -210,6 +236,8 @@ tarel context retail-demo \
 The pinned Qwen3-Embedding-0.6B GGUF runs in-process on the CPU. TAREL does not add Torch,
 SentenceTransformers, a vector database, an API server, or a local generation model. Indexes contain
 only allowlisted graph metadata and are explicitly rebuildable.
+Index construction reports embedding batches and the final persistence phase, so a larger local
+schema never looks stalled while the CPU model is working.
 
 Context packets are deterministic and budgeted. They report selected objects, fields, joins,
 expansion paths, retrieval reasons, warnings, review state, hashes, and every omission. Stable facts
@@ -256,6 +284,7 @@ activates the package explicitly.
 | `tarel connector` | Inspect, sample, and scaffold read-only adapters |
 | `tarel graph` | Build, refresh, inspect, and batch-annotate graphs |
 | `tarel annotation` | Plan, apply, edit, and review semantic proposals |
+| `tarel knowledge` | Attach bounded Markdown/TXT context to annotation scopes |
 | `tarel relationship` | Add, discover, probe, and review joins |
 | `tarel lineage` | Build, analyze, review, find, and trace lineage |
 | `tarel focus` | Save report- or cube-centred upstream slices |

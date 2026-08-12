@@ -25,7 +25,6 @@ from tarel.lineage.coverage import write_markers
 from tarel.lineage.source import LineageInput, SourceDefinition, stable_id
 from tarel.lineage.tasks import lineage_task, require_current_source
 
-_IDENTIFIER = re.compile(r"[a-z0-9_#$]+(?:\s*\.\s*[a-z0-9_#$]+)*", re.IGNORECASE)
 _WRITE_OPERATIONS = frozenset({"delete", "insert", "merge", "select_into", "truncate", "update"})
 _SOURCE_ROLES = frozenset(
     {"audit", "business_data", "control", "deduplication", "filter", "lookup", "unknown"}
@@ -284,15 +283,15 @@ def apply_lineage_proposal(
         if item.definition_id != definition_id
         or item.evidence.source == "declared_reference"
     ]
-    declared_keys = {
-        (item.operation.casefold(), item.target.casefold())
+    declared_claims = tuple(
+        item
         for item in claims
         if item.definition_id == definition_id and item.evidence.source == "declared_reference"
-    }
+    )
     claims.extend(
         item
         for item in proposed_claims
-        if (item.operation.casefold(), item.target.casefold()) not in declared_keys
+        if not _covered_by_declared_claim(item, declared_claims, definition)
     )
     write_units = [item for item in document.write_units if item.definition_id != definition_id]
     write_units.extend(proposed_units)
@@ -447,6 +446,48 @@ def _proposal_claim(definition: SourceDefinition, data: dict[str, Any]) -> Linea
         target=target,
         state="draft",
         evidence=evidence,
+    )
+
+
+def _covered_by_declared_claim(
+    proposed: LineageClaim,
+    declared: tuple[LineageClaim, ...],
+    definition: SourceDefinition,
+) -> bool:
+    same_operation = tuple(
+        item
+        for item in declared
+        if item.operation.casefold() == proposed.operation.casefold()
+    )
+    if any(_same_reference(item.target, proposed.target) for item in same_operation):
+        return True
+    return proposed.operation == "read" and _is_local_read_symbol(
+        proposed.target,
+        definition.content,
+    )
+
+
+def _same_reference(left: str, right: str) -> bool:
+    left_parts = _parts(left)
+    right_parts = _parts(right)
+    shorter = min(len(left_parts), len(right_parts))
+    return bool(shorter) and left_parts[-shorter:] == right_parts[-shorter:]
+
+
+def _is_local_read_symbol(reference: str, content: str) -> bool:
+    parts = _parts(reference)
+    if len(parts) != 1:
+        return False
+    name = parts[0]
+    if name.startswith(("#", "@")):
+        return True
+    identifier = _quoted_identifier_pattern(name)
+    return any(
+        re.search(pattern, content, re.IGNORECASE) is not None
+        for pattern in (
+            rf"\bdeclare\s+{identifier}\s+cursor\b",
+            rf"(?:\bwith|,)\s*{identifier}\s+as\s*\(",
+        )
     )
 
 
@@ -663,11 +704,19 @@ def _reference_present(reference: str, evidence: str) -> bool:
     target = _parts(reference)
     if not target:
         return False
-    for match in _IDENTIFIER.finditer(_unquote(evidence)):
-        candidate = _parts(match.group())
-        if len(target) <= len(candidate) and candidate[-len(target) :] == target:
-            return True
-    return False
+    identifiers = [_quoted_identifier_pattern(part) for part in target]
+    pattern = r"\s*\.\s*".join(identifiers)
+    return re.search(
+        rf"(?<![a-z0-9_#$]){pattern}(?![a-z0-9_#$])",
+        evidence,
+        re.IGNORECASE,
+    ) is not None
+
+
+def _quoted_identifier_pattern(value: str) -> str:
+    words = [re.escape(item) for item in value.split()]
+    content = r"\s+".join(words)
+    return rf'(?:\[\s*{content}\s*\]|"\s*{content}\s*"|`\s*{content}\s*`|{content})'
 
 
 def _reject_placeholder_target(target: str) -> None:
