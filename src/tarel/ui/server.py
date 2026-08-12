@@ -15,6 +15,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from tarel.annotations.contracts import AnnotationFailure
+from tarel.annotations.review import resolve_annotation_target
 from tarel.application import (
     create_workspace_use_case,
     decide_annotation_use_case,
@@ -23,6 +24,7 @@ from tarel.application import (
     define_workspace_zone_use_case,
     edit_annotation_use_case,
     list_focuses_use_case,
+    list_knowledge_documents_use_case,
     list_workspaces_use_case,
     load_focus_use_case,
     load_graph_use_case,
@@ -33,6 +35,8 @@ from tarel.focus.contracts import FocusDocument, FocusFailure
 from tarel.focus.core import require_current_focus
 from tarel.graph.contracts import GraphDocument, GraphFailure
 from tarel.graph.revision import graph_revision
+from tarel.knowledge.contracts import KnowledgeContext, KnowledgeFailure
+from tarel.knowledge.core import resolve_knowledge
 from tarel.lineage.application import (
     add_manual_hop_use_case,
     add_manual_job_use_case,
@@ -90,6 +94,7 @@ class TarelUIBackend:
 
     def bootstrap(self) -> dict[str, object]:
         documents = tuple(load_lineage_use_case(name) for name in self._lineages)
+        workspace = None
         if self.config.workspace:
             workspace = load_workspace_use_case(self.config.workspace)
             scope = self._scope()
@@ -103,6 +108,7 @@ class TarelUIBackend:
             )
         else:
             graph = load_graph_use_case(self._single_graph())
+            graphs = (graph,)
             workspaces = tuple(
                 load_workspace_use_case(name) for name in list_workspaces_use_case()
             )
@@ -120,6 +126,33 @@ class TarelUIBackend:
         payload["focus_selection"] = (
             self._select_focuses(self.config.focuses) if self.config.focuses else None
         )
+        knowledge_documents = list_knowledge_documents_use_case()
+        payload["knowledge_documents"] = [
+            item.to_dict(include_content=False)
+            for item in knowledge_documents
+        ]
+        graph_by_name = {item.name: item for item in graphs}
+        for record in payload["review"]:
+            if not isinstance(record, dict):
+                continue
+            try:
+                record_graph = graph_by_name[str(record["graph"])]
+                node, _reference = resolve_annotation_target(
+                    record_graph,
+                    str(record["label"]),
+                )
+                context = resolve_knowledge(
+                    knowledge_documents,
+                    record_graph,
+                    node,
+                    workspace=workspace,
+                    mode="scoped",
+                )
+            except (AnnotationFailure, KeyError, KnowledgeFailure):
+                context = KnowledgeContext()
+            record["available_context_document_ids"] = [
+                item.id for item in context.references
+            ]
         return payload
 
     def mutate(self, route: str, payload: dict[str, Any]) -> dict[str, object]:
@@ -634,8 +667,8 @@ def run_ui(
 def _ui_failure(exc: Exception) -> UIFailure:
     if isinstance(exc, UIFailure):
         return exc
-    if isinstance(exc, (AnnotationFailure, FocusFailure, GraphFailure, LineageFailure,
-                        RelationshipFailure, WorkspaceFailure)):
+    if isinstance(exc, (AnnotationFailure, FocusFailure, GraphFailure, KnowledgeFailure,
+                        LineageFailure, RelationshipFailure, WorkspaceFailure)):
         code = getattr(exc, "code", "ui_operation_failed")
         status = 409 if code in {
             "focus_stale",

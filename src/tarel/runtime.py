@@ -8,6 +8,7 @@ from pathlib import Path
 from tarel.focus.store import FileFocusStore
 from tarel.graph.change_store import FileGraphChangeStore
 from tarel.graph.store import FileGraphStore
+from tarel.knowledge.store import FileKnowledgeStore
 from tarel.lineage.analysis_cache import FileLineageAnalysisCache
 from tarel.lineage.change_store import FileLineageChangeStore
 from tarel.lineage.store import FileLineageStore
@@ -40,6 +41,9 @@ class TarelRuntime:
 
     def lineage_analysis_cache(self) -> FileLineageAnalysisCache:
         return FileLineageAnalysisCache(self.root / "lineage-analysis-cache")
+
+    def knowledge_store(self) -> FileKnowledgeStore:
+        return FileKnowledgeStore(self.root / "knowledge")
 
     def focus_store(self) -> FileFocusStore:
         return FileFocusStore(self.root / "focus")

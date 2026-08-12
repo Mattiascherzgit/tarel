@@ -105,6 +105,37 @@ class RetrievalTests(TestCase):
         self.assertIn("dbo.DimDate", [hit.label for hit in hybrid.hits])
         self.assertEqual(hybrid.mode, "hybrid")
 
+    def test_index_build_reports_embedding_and_persistence_progress(self) -> None:
+        graph = _retrieval_graph()
+        events: list[tuple[int, int, str]] = []
+        with TemporaryDirectory(dir=Path.cwd()) as temporary_directory:
+            root = Path(temporary_directory)
+            model = root / "model.gguf"
+            model.write_bytes(b"test model")
+            store = FileRetrievalIndex(root / "indexes")
+
+            store.build(
+                graph,
+                embedder=_FakeEmbedding(),
+                model_path=model,
+                batch_size=3,
+                progress=lambda completed, total, phase: events.append(
+                    (completed, total, phase)
+                ),
+            )
+
+        self.assertEqual(
+            events,
+            [
+                (0, 8, "embedding"),
+                (3, 8, "embedding"),
+                (6, 8, "embedding"),
+                (8, 8, "embedding"),
+                (8, 8, "writing"),
+                (8, 8, "ready"),
+            ],
+        )
+
     def test_changed_graph_requires_an_explicit_index_rebuild(self) -> None:
         graph = _retrieval_graph()
         embedder = _FakeEmbedding()

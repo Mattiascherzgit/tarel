@@ -338,7 +338,31 @@ def refresh_lineage(
         ):
             analyses.extend(_rebind_analysis(item, definition) for item in previous_analyses)
             failures.extend(_rebind_failure(item, definition) for item in previous_failures)
-            claims.extend(_rebind_claim(item, definition) for item in previous_claims)
+            for item in previous_claims:
+                if item.evidence.source != "declared_reference":
+                    claims.append(_rebind_claim(item, definition))
+                    continue
+                declared = discovered_declared_claims[item.id]
+                evidence_changed = declared.evidence != item.evidence
+                state = (
+                    "review_required"
+                    if evidence_changed and item.state == "validated"
+                    else item.state
+                )
+                claims.append(replace(declared, state=state, reviews=item.reviews))
+                if evidence_changed:
+                    stale_items.append(
+                        _stale_item(
+                            "claim",
+                            previous,
+                            item.to_dict(),
+                            item.state,
+                            True,
+                            ("declared_reference_evidence_changed",),
+                        )
+                    )
+                    if state != item.state:
+                        review_required_claims += 1
             write_units.extend(_rebind_write_unit(item, definition) for item in previous_units)
             continue
 
@@ -367,7 +391,12 @@ def refresh_lineage(
             )
         )
         for item in previous_claims:
-            refreshed = replace(item, definition_id=definition.id, state="review_required")
+            base = (
+                discovered_declared_claims[item.id]
+                if item.evidence.source == "declared_reference"
+                else item
+            )
+            refreshed = replace(base, definition_id=definition.id, state="review_required")
             claims.append(refreshed)
             review_required_claims += 1
             stale_items.append(
@@ -614,12 +643,12 @@ def _declared_claim_changes(
     before_definitions = {item.id: item.external_id for item in current.definitions}
     after_definitions = {item.id: item.external_id for item in discovered.definitions}
     before = {
-        (before_definitions[item.definition_id], item.operation, item.target)
+        (before_definitions[item.definition_id], item.operation, item.target): item
         for item in current.claims
         if item.evidence.source == "declared_reference"
     }
     after = {
-        (after_definitions[item.definition_id], item.operation, item.target)
+        (after_definitions[item.definition_id], item.operation, item.target): item
         for item in discovered.claims
         if item.evidence.source == "declared_reference"
     }
@@ -632,7 +661,7 @@ def _declared_claim_changes(
             {"operation": operation, "target": target},
             None,
         )
-        for external_id, operation, target in sorted(before - after)
+        for external_id, operation, target in sorted(before.keys() - after.keys())
     ]
     changes.extend(
         LineageChange(
@@ -643,8 +672,31 @@ def _declared_claim_changes(
             None,
             {"operation": operation, "target": target},
         )
-        for external_id, operation, target in sorted(after - before)
+        for external_id, operation, target in sorted(after.keys() - before.keys())
     )
+    for key in sorted(before.keys() & after.keys()):
+        old = before[key]
+        new = after[key]
+        if old.evidence != new.evidence:
+            external_id, operation, target = key
+            changes.append(
+                LineageChange(
+                    "declared_reference_evidence_changed",
+                    "review_required",
+                    "claim",
+                    external_id,
+                    {
+                        "evidence": old.evidence.to_dict(),
+                        "operation": operation,
+                        "target": target,
+                    },
+                    {
+                        "evidence": new.evidence.to_dict(),
+                        "operation": operation,
+                        "target": target,
+                    },
+                )
+            )
     return changes
 
 

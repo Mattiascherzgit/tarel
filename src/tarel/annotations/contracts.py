@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tarel.graph.contracts import AnnotationEvidence
+from tarel.knowledge.contracts import KnowledgeFailure, KnowledgeReference
 from tarel.providers.contracts import StructuredRequest
 
 
@@ -22,6 +23,7 @@ class AnnotationTask:
     target_id: str
     target_label: str
     request: StructuredRequest
+    context_documents: tuple[KnowledgeReference, ...] = ()
     protected_values: tuple[str, ...] = field(default=(), repr=False)
 
     def to_dict(self) -> dict[str, object]:
@@ -31,10 +33,12 @@ class AnnotationTask:
             "messages": [message.to_dict() for message in self.request.messages],
             "response_schema": self.request.schema,
             "schema_name": self.request.schema_name,
+            "context_documents": [item.to_dict() for item in self.context_documents],
             "target_id": self.target_id,
             "target_label": self.target_label,
             "submission_template": {
                 "annotation": "<response matching response_schema>",
+                "context_documents": [item.to_dict() for item in self.context_documents],
                 "target_id": self.target_id,
                 "task_id": self.id,
             },
@@ -89,16 +93,31 @@ class AnnotationProposalEnvelope:
     task_id: str
     target_id: str
     annotation: ObjectAnnotationProposal
+    context_documents: tuple[KnowledgeReference, ...] = ()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AnnotationProposalEnvelope:
         annotation = data.get("annotation")
         if not isinstance(annotation, dict):
             raise AnnotationFailure("invalid_proposal", "Proposal requires an annotation object.")
+        context_documents = data.get("context_documents", [])
+        if not isinstance(context_documents, list):
+            raise AnnotationFailure(
+                "invalid_proposal",
+                "Proposal context_documents must be an array.",
+            )
+        try:
+            references = tuple(KnowledgeReference.from_dict(item) for item in context_documents)
+        except (KnowledgeFailure, AttributeError) as exc:
+            raise AnnotationFailure(
+                "invalid_proposal",
+                "Proposal contains an invalid knowledge reference.",
+            ) from exc
         return cls(
             task_id=_required_string(data, "task_id"),
             target_id=_required_string(data, "target_id"),
             annotation=ObjectAnnotationProposal.from_dict(annotation),
+            context_documents=references,
         )
 
 

@@ -378,8 +378,16 @@ class SDKTests(TestCase):
             graph, _lineage = _fixture()
             sdk.runtime.graph_store().save(graph)
             embedding = _Embedding()
+            progress: list[tuple[int, int, str]] = []
             with patch("tarel.application.LlamaCppEmbedding", return_value=embedding):
-                built = sdk.index.build("demo", model_path=model)
+                built = sdk.index.build(
+                    "demo",
+                    model_path=model,
+                    batch_size=1,
+                    progress=lambda completed, total, phase: progress.append(
+                        (completed, total, phase)
+                    ),
+                )
                 results = sdk.search.graph(
                     "demo",
                     "curated reporting",
@@ -391,6 +399,8 @@ class SDKTests(TestCase):
         self.assertEqual(built.path, root / "state/indexes/demo/index.sqlite")
         self.assertEqual(results.hits[0].label, "mart.Sales")
         self.assertTrue(status["current"])
+        self.assertEqual(progress[0], (0, 4, "embedding"))
+        self.assertEqual(progress[-2:], [(4, 4, "writing"), (4, 4, "ready")])
 
     def test_grounding_bundle_maps_heterogeneous_sources_and_lineage(self) -> None:
         with TemporaryDirectory() as temporary_directory:
@@ -450,6 +460,7 @@ class SDKTests(TestCase):
         self.assertEqual(first.stable_prompt(), second.stable_prompt())
         self.assertNotIn("Show curated sales", first.stable_prompt())
         self.assertIn("Show curated sales", first.dynamic_prompt())
+        self.assertIn("evidence=The query reads the named source.", first.dynamic_prompt())
         self.assertNotIn("source_reference", first.canonical_json())
         self.assertNotIn("dbt/models/sales.sql", first.canonical_json())
         self.assertNotIn(str(Path(temporary_directory)), first.canonical_json())

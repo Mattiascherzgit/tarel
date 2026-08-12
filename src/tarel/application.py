@@ -22,6 +22,7 @@ from tarel.annotations.review import (
     decide_annotation_scope,
     edit_annotation,
     list_annotation_reviews,
+    resolve_annotation_target,
 )
 from tarel.annotations.runner import run_annotation_batch
 from tarel.annotations.states import selected_annotation_states
@@ -73,6 +74,16 @@ from tarel.graph.contracts import GraphDocument, GraphEdge
 from tarel.graph.refresh import GraphRefreshReport, refresh_graph
 from tarel.graph.revision import graph_revision
 from tarel.graph.store import FileGraphStore
+from tarel.knowledge.contracts import (
+    DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
+    KnowledgeContext,
+    KnowledgeDocument,
+    KnowledgeFailure,
+    KnowledgeReference,
+    KnowledgeScope,
+)
+from tarel.knowledge.core import resolve_knowledge
+from tarel.knowledge.store import FileKnowledgeStore
 from tarel.lineage.contracts import LineageDocument
 from tarel.lineage.store import FileLineageStore
 from tarel.lineage.traversal import DEFAULT_LINEAGE_STATES, trace_upstream
@@ -167,6 +178,12 @@ class AnnotationReviewResult:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeChangeResult:
+    document: KnowledgeDocument
+    path: Path
+
+
+@dataclass(frozen=True, slots=True)
 class RelationshipChangeResult:
     graph: GraphDocument
     path: Path
@@ -227,6 +244,10 @@ def _focus_store(runtime: TarelRuntime | None) -> FileFocusStore:
 
 def _workspace_store(runtime: TarelRuntime | None) -> FileWorkspaceStore:
     return FileWorkspaceStore() if runtime is None else runtime.workspace_store()
+
+
+def _knowledge_store(runtime: TarelRuntime | None) -> FileKnowledgeStore:
+    return FileKnowledgeStore() if runtime is None else runtime.knowledge_store()
 
 
 def _retrieval_index(runtime: TarelRuntime | None) -> FileRetrievalIndex:
@@ -1193,6 +1214,7 @@ def build_retrieval_index_use_case(
     model_path: Path | None = None,
     batch_size: int = 16,
     n_threads: int | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
     runtime: TarelRuntime | None = None,
 ) -> IndexBuildResult:
     graph = _graph_store(runtime).load(name)
@@ -1202,6 +1224,7 @@ def build_retrieval_index_use_case(
         embedder=LlamaCppEmbedding(resolved_model, n_threads=n_threads),
         model_path=resolved_model,
         batch_size=batch_size,
+        progress=progress,
     )
 
 
@@ -1356,6 +1379,100 @@ def decide_relationship_use_case(
     return RelationshipChangeResult(graph=updated, path=path, edge=edge)
 
 
+def add_knowledge_document_use_case(
+    document_id: str,
+    source_path: Path,
+    *,
+    scope_reference: str,
+    title: str | None = None,
+    state: str = "draft",
+    workspace_name: str | None = None,
+    replace_existing: bool = False,
+    runtime: TarelRuntime | None = None,
+) -> KnowledgeChangeResult:
+    store = _knowledge_store(runtime)
+    if document_id in store.list() and not replace_existing:
+        raise KnowledgeFailure(
+            "knowledge_exists",
+            f"Knowledge document already exists: {document_id}",
+        )
+    path = source_path.expanduser()
+    if path.suffix.casefold() not in {".md", ".txt"}:
+        raise KnowledgeFailure(
+            "unsupported_knowledge_format",
+            "Knowledge documents must be UTF-8 Markdown or text files.",
+        )
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise KnowledgeFailure(
+            "knowledge_source_not_found",
+            f"Knowledge source file not found: {source_path}",
+        ) from exc
+    except (OSError, UnicodeDecodeError) as exc:
+        raise KnowledgeFailure(
+            "invalid_knowledge_source",
+            f"Could not read UTF-8 knowledge source: {source_path}",
+        ) from exc
+    scope = _validated_knowledge_scope(
+        KnowledgeScope.parse(scope_reference),
+        workspace_name=workspace_name,
+        runtime=runtime,
+    )
+    document = KnowledgeDocument(
+        id=document_id,
+        title=(title or path.stem.replace("-", " ").replace("_", " ")).strip(),
+        scope=scope,
+        content=content,
+        source_name=path.name,
+        state=state,
+    )
+    return KnowledgeChangeResult(document=document, path=store.save(document))
+
+
+def list_knowledge_documents_use_case(
+    *,
+    runtime: TarelRuntime | None = None,
+) -> tuple[KnowledgeDocument, ...]:
+    store = _knowledge_store(runtime)
+    return tuple(store.load(document_id) for document_id in store.list())
+
+
+def load_knowledge_document_use_case(
+    document_id: str,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> KnowledgeDocument:
+    return _knowledge_store(runtime).load(document_id)
+
+
+def resolve_knowledge_use_case(
+    graph_name: str,
+    object_reference: str,
+    *,
+    mode: str = "scoped",
+    document_ids: tuple[str, ...] = (),
+    workspace_name: str | None = None,
+    max_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
+    runtime: TarelRuntime | None = None,
+) -> KnowledgeContext:
+    graph = _graph_store(runtime).load(graph_name)
+    node, _reference = resolve_annotation_target(graph, object_reference)
+    workspace = (
+        _workspace_store(runtime).load(workspace_name) if workspace_name is not None else None
+    )
+    _require_graph_in_knowledge_workspace(graph_name, workspace)
+    return resolve_knowledge(
+        list_knowledge_documents_use_case(runtime=runtime),
+        graph,
+        node,
+        workspace=workspace,
+        mode=mode,
+        document_ids=document_ids,
+        max_characters=max_characters,
+    )
+
+
 def plan_annotations_use_case(
     name: str,
     *,
@@ -1365,6 +1482,10 @@ def plan_annotations_use_case(
     missing_only: bool = True,
     sample_limit: int = 0,
     config_path: Path | None = None,
+    knowledge_mode: str = "none",
+    knowledge_document_ids: tuple[str, ...] = (),
+    knowledge_workspace: str | None = None,
+    max_knowledge_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
     runtime: TarelRuntime | None = None,
 ) -> tuple[AnnotationTask, ...]:
     graph = _graph_store(runtime).load(name)
@@ -1376,6 +1497,11 @@ def plan_annotations_use_case(
         missing_only=missing_only,
         sample_limit=sample_limit,
         config_path=config_path,
+        knowledge_mode=knowledge_mode,
+        knowledge_document_ids=knowledge_document_ids,
+        knowledge_workspace=knowledge_workspace,
+        max_knowledge_characters=max_knowledge_characters,
+        runtime=runtime,
     )
 
 
@@ -1388,6 +1514,10 @@ def plan_focus_annotations_use_case(
     missing_only: bool = True,
     sample_limit: int = 0,
     config_path: Path | None = None,
+    knowledge_mode: str = "none",
+    knowledge_document_ids: tuple[str, ...] = (),
+    knowledge_workspace: str | None = None,
+    max_knowledge_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
     runtime: TarelRuntime | None = None,
 ) -> tuple[AnnotationTask, ...]:
     if limit is not None and limit < 1:
@@ -1424,6 +1554,11 @@ def plan_focus_annotations_use_case(
                 missing_only=missing_only,
                 sample_limit=sample_limit,
                 config_path=config_path,
+                knowledge_mode=knowledge_mode,
+                knowledge_document_ids=knowledge_document_ids,
+                knowledge_workspace=knowledge_workspace,
+                max_knowledge_characters=max_knowledge_characters,
+                runtime=runtime,
             )
         )
     ordered = tuple(
@@ -1450,6 +1585,7 @@ def apply_annotation_use_case(
     store = _graph_store(runtime)
     graph = store.load(name)
     envelope = AnnotationProposalEnvelope.from_dict(payload)
+    _validate_knowledge_references(envelope.context_documents, runtime=runtime)
     updated = apply_annotation_proposal(graph, envelope, source=source)
     path = store.save(updated)
     return AnnotationApplyResult(graph=updated, path=path, target_id=envelope.target_id)
@@ -1529,6 +1665,10 @@ def run_annotation_batch_use_case(
     timeout: float = 120.0,
     sample_limit: int = 0,
     config_path: Path | None = None,
+    knowledge_mode: str = "none",
+    knowledge_document_ids: tuple[str, ...] = (),
+    knowledge_workspace: str | None = None,
+    max_knowledge_characters: int = DEFAULT_MAX_KNOWLEDGE_CHARACTERS,
     progress: Callable[[int, int, str, str], None] | None = None,
     runtime: TarelRuntime | None = None,
 ) -> AnnotationBatchResult:
@@ -1542,6 +1682,11 @@ def run_annotation_batch_use_case(
         missing_only=missing_only,
         sample_limit=sample_limit,
         config_path=config_path,
+        knowledge_mode=knowledge_mode,
+        knowledge_document_ids=knowledge_document_ids,
+        knowledge_workspace=knowledge_workspace,
+        max_knowledge_characters=max_knowledge_characters,
+        runtime=runtime,
     )
     provider = load_provider(provider_name, timeout=timeout)
     updated, run = run_annotation_batch(
@@ -1570,6 +1715,11 @@ def _plan_graph_annotations(
     missing_only: bool,
     sample_limit: int,
     config_path: Path | None,
+    knowledge_mode: str,
+    knowledge_document_ids: tuple[str, ...],
+    knowledge_workspace: str | None,
+    max_knowledge_characters: int,
+    runtime: TarelRuntime | None,
 ) -> tuple[AnnotationTask, ...]:
     if not 0 <= sample_limit <= 10:
         raise ConnectorFailure("invalid_sample_limit", "Sample limit must be between 0 and 10.")
@@ -1580,21 +1730,28 @@ def _plan_graph_annotations(
         limit=limit,
         missing_only=missing_only,
     )
-    if sample_limit == 0:
-        return tasks
-
     node_by_id = graph.node_by_id()
     samples: dict[str, SampleResult] = {}
-    for task in tasks:
-        node = node_by_id[task.target_id]
-        samples[task.target_id] = sample_connector_use_case(
-            graph.connector,
-            config_path=config_path,
-            database=graph.catalog,
-            namespace=str(node.metadata["namespace"]),
-            object_name=str(node.metadata["name"]),
-            limit=sample_limit,
-        )
+    if sample_limit:
+        for task in tasks:
+            node = node_by_id[task.target_id]
+            samples[task.target_id] = sample_connector_use_case(
+                graph.connector,
+                config_path=config_path,
+                database=graph.catalog,
+                namespace=str(node.metadata["namespace"]),
+                object_name=str(node.metadata["name"]),
+                limit=sample_limit,
+            )
+    knowledge = _knowledge_contexts_for_tasks(
+        graph,
+        tasks,
+        mode=knowledge_mode,
+        document_ids=knowledge_document_ids,
+        workspace_name=knowledge_workspace,
+        max_characters=max_knowledge_characters,
+        runtime=runtime,
+    )
     return plan_annotation_tasks(
         graph,
         namespace=namespace,
@@ -1602,7 +1759,135 @@ def _plan_graph_annotations(
         limit=limit,
         missing_only=missing_only,
         samples_by_target=samples,
+        knowledge_by_target=knowledge,
     )
+
+
+def _knowledge_contexts_for_tasks(
+    graph: GraphDocument,
+    tasks: tuple[AnnotationTask, ...],
+    *,
+    mode: str,
+    document_ids: tuple[str, ...],
+    workspace_name: str | None,
+    max_characters: int,
+    runtime: TarelRuntime | None,
+) -> dict[str, KnowledgeContext]:
+    if mode == "none" and not document_ids:
+        return {}
+    workspace = (
+        _workspace_store(runtime).load(workspace_name) if workspace_name is not None else None
+    )
+    _require_graph_in_knowledge_workspace(graph.name, workspace)
+    documents = list_knowledge_documents_use_case(runtime=runtime)
+    node_by_id = graph.node_by_id()
+    return {
+        task.target_id: resolve_knowledge(
+            documents,
+            graph,
+            node_by_id[task.target_id],
+            workspace=workspace,
+            mode=mode,
+            document_ids=document_ids,
+            max_characters=max_characters,
+        )
+        for task in tasks
+    }
+
+
+def _validated_knowledge_scope(
+    scope: KnowledgeScope,
+    *,
+    workspace_name: str | None,
+    runtime: TarelRuntime | None,
+) -> KnowledgeScope:
+    if scope.kind == "global":
+        return scope
+    if scope.kind == "system":
+        if workspace_name is None:
+            raise KnowledgeFailure(
+                "knowledge_workspace_required",
+                "Registering system knowledge requires --workspace for validation.",
+            )
+        workspace = _workspace_store(runtime).load(workspace_name)
+        if not any(
+            item.name.casefold() == scope.reference.casefold()
+            for item in workspace.systems
+        ):
+            raise KnowledgeFailure(
+                "knowledge_scope_not_found",
+                f"Workspace system not found: {scope.reference}",
+            )
+        system = next(
+            item for item in workspace.systems if item.name.casefold() == scope.reference.casefold()
+        )
+        return KnowledgeScope(
+            kind="system",
+            reference=system.name,
+            workspace=workspace.name,
+        )
+    graph_name = scope.reference if scope.kind == "graph" else scope.graph
+    assert graph_name is not None
+    graph = _graph_store(runtime).load(graph_name)
+    if scope.kind == "graph":
+        return KnowledgeScope(kind="graph", reference=graph.name)
+    if scope.kind == "schema":
+        namespaces = {
+            str(item.metadata.get("namespace") or "")
+            for item in graph.nodes
+            if item.type in {"table", "view"}
+        }
+        matches = [item for item in namespaces if item.casefold() == scope.reference.casefold()]
+        if len(matches) != 1:
+            raise KnowledgeFailure(
+                "knowledge_scope_not_found",
+                f"Graph schema not found: {graph.name}:{scope.reference}",
+            )
+        return KnowledgeScope(kind="schema", graph=graph.name, reference=matches[0])
+    node, reference = resolve_annotation_target(graph, scope.reference)
+    if node.type not in {"table", "view"}:
+        raise KnowledgeFailure(
+            "invalid_knowledge_scope",
+            "Object knowledge must target a table or view.",
+        )
+    return KnowledgeScope(kind="object", graph=graph.name, reference=reference)
+
+
+def _require_graph_in_knowledge_workspace(
+    graph_name: str,
+    workspace: WorkspaceDocument | None,
+) -> None:
+    if workspace is not None and not any(
+        graph_name in system.graphs for system in workspace.systems
+    ):
+        raise KnowledgeFailure(
+            "knowledge_graph_outside_workspace",
+            f"Graph {graph_name} is outside workspace {workspace.name}.",
+        )
+
+
+def _validate_knowledge_references(
+    references: tuple[KnowledgeReference, ...],
+    *,
+    runtime: TarelRuntime | None,
+) -> None:
+    store = _knowledge_store(runtime)
+    for reference in references:
+        document = store.load(reference.id)
+        valid_length = 0 < reference.characters <= len(document.content)
+        expected_truncation = reference.characters < len(document.content)
+        if (
+            reference.title != document.title
+            or reference.scope != document.scope
+            or reference.state != document.state
+            or reference.revision != document.revision
+            or not valid_length
+            or reference.truncated != expected_truncation
+        ):
+            raise KnowledgeFailure(
+                "stale_knowledge_reference",
+                f"Knowledge reference is stale or inconsistent: {reference.id}",
+            )
 
 
 def _read_config(path: Path | None) -> dict[str, Any]:

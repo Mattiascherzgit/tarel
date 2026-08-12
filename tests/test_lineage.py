@@ -213,6 +213,201 @@ UPDATE target_alias SET value = 1 FROM #Stage AS target_alias;
         with self.assertRaisesRegex(LineageFailure, "did not classify"):
             apply_lineage_proposal(document, source, broad)
 
+    def test_apply_accepts_quoted_identifiers_with_spaces(self) -> None:
+        definition = SourceDefinition(
+            external_id="load-stock-item",
+            kind="procedure",
+            name="LoadStockItem",
+            qualified_name="Integration.LoadStockItem",
+            language="tsql",
+            content=(
+                "CREATE PROCEDURE [Integration].[LoadStockItem] AS\n"
+                "INSERT INTO [Dimension].[Stock Item] ([Stock Item Key])\n"
+                "SELECT [StockItemID]\n"
+                "FROM [Warehouse].[StockItems];"
+            ),
+            source_reference="test:load-stock-item",
+        )
+        source = LineageInput(
+            source_kind="test",
+            source_name="Quoted identifiers",
+            source_reference="tests:quoted-identifiers",
+            workflow_external_id="quoted-identifiers",
+            workflow_name="Quoted identifiers",
+            definitions=(definition,),
+            steps=(SourceStep("load", "Load", definition.external_id, ()),),
+        )
+        document = build_lineage("quoted-identifiers", source)
+        proposal = {
+            "analysis": {
+                "excluded_writes": [],
+                "observations": [],
+                "summary": "Loads the stock-item dimension.",
+                "warnings": [],
+                "writes": [
+                    {
+                        "line_end": 2,
+                        "line_start": 2,
+                        "operation": "insert",
+                        "reason": "The INSERT names the durable target.",
+                        "sources": [
+                            {
+                                "line_end": 4,
+                                "line_start": 4,
+                                "reason": "The FROM clause names the physical source.",
+                                "role": "business_data",
+                                "target": "Warehouse.StockItems",
+                                "via": [],
+                            }
+                        ],
+                        "target": "Dimension.Stock Item",
+                        "warnings": [],
+                    }
+                ],
+            },
+            "definition_id": definition.id,
+            "task_id": lineage_task(document, definition).id,
+        }
+
+        updated = apply_lineage_proposal(document, source, proposal)
+
+        self.assertEqual(updated.write_units[0].target, "Dimension.Stock Item")
+        self.assertEqual(updated.write_units[0].sources[0].target, "Warehouse.StockItems")
+
+    def test_declared_reads_override_duplicate_and_local_provider_observations(self) -> None:
+        definition = SourceDefinition(
+            external_id="extract-orders",
+            kind="procedure",
+            name="ExtractOrders",
+            qualified_name="Integration.ExtractOrders",
+            language="tsql",
+            content=(
+                "CREATE PROCEDURE Integration.ExtractOrders AS\n"
+                "DECLARE OrderCursor CURSOR FOR SELECT OrderID FROM Sales.Orders;\n"
+                "SELECT OrderID FROM Sales.Orders;"
+            ),
+            source_reference="test:extract-orders",
+        )
+        source = LineageInput(
+            source_kind="test",
+            source_name="Declared reads",
+            source_reference="tests:declared-reads",
+            workflow_external_id="declared-reads",
+            workflow_name="Declared reads",
+            definitions=(definition,),
+            steps=(SourceStep("extract", "Extract", definition.external_id, ()),),
+            observations=(
+                SourceObservation(
+                    definition_external_id=definition.external_id,
+                    operation="read",
+                    target="Demo.Sales.Orders",
+                    source_reference="catalog:dependencies",
+                    reason="The catalog declares this physical dependency.",
+                    line_start=2,
+                    line_end=2,
+                ),
+            ),
+        )
+        document = build_lineage("declared-reads", source)
+        task = lineage_task(document, definition)
+        proposal = {
+            "analysis": {
+                "excluded_writes": [],
+                "observations": [
+                    {
+                        "line_end": 3,
+                        "line_start": 3,
+                        "operation": "read",
+                        "reason": "The result reads the orders table.",
+                        "target": "Sales.Orders",
+                    },
+                    {
+                        "line_end": 2,
+                        "line_start": 2,
+                        "operation": "read",
+                        "reason": "The cursor drives local iteration.",
+                        "target": "OrderCursor",
+                    },
+                ],
+                "summary": "Read-only order extraction.",
+                "warnings": [],
+                "writes": [],
+            },
+            "definition_id": definition.id,
+            "task_id": task.id,
+        }
+
+        updated = apply_lineage_proposal(document, source, proposal)
+
+        self.assertEqual(len(updated.claims), 1)
+        self.assertEqual(updated.claims[0].target, "Demo.Sales.Orders")
+        self.assertEqual(updated.claims[0].evidence.source, "declared_reference")
+
+    def test_partial_declared_reads_do_not_hide_a_second_physical_source(self) -> None:
+        definition = SourceDefinition(
+            external_id="extract-orders",
+            kind="procedure",
+            name="ExtractOrders",
+            qualified_name="Integration.ExtractOrders",
+            language="tsql",
+            content=(
+                "CREATE PROCEDURE Integration.ExtractOrders AS\n"
+                "SELECT o.OrderID FROM Sales.Orders o "
+                "JOIN Sales.Customers c ON c.CustomerID = o.CustomerID;"
+            ),
+            source_reference="test:extract-orders",
+        )
+        source = LineageInput(
+            source_kind="test",
+            source_name="Partially declared reads",
+            source_reference="tests:partial-declared-reads",
+            workflow_external_id="partial-declared-reads",
+            workflow_name="Partially declared reads",
+            definitions=(definition,),
+            steps=(SourceStep("extract", "Extract", definition.external_id, ()),),
+            observations=(
+                SourceObservation(
+                    definition_external_id=definition.external_id,
+                    operation="read",
+                    target="Demo.Sales.Orders",
+                    source_reference="catalog:dependencies",
+                    reason="The catalog declares the orders dependency.",
+                    line_start=2,
+                    line_end=2,
+                ),
+            ),
+        )
+        document = build_lineage("partial-declared-reads", source)
+        proposal = {
+            "analysis": {
+                "excluded_writes": [],
+                "observations": [
+                    {
+                        "line_end": 2,
+                        "line_start": 2,
+                        "operation": "read",
+                        "reason": "The JOIN names a second physical source.",
+                        "target": "Customers",
+                    }
+                ],
+                "summary": "Reads orders and customers.",
+                "warnings": [],
+                "writes": [],
+            },
+            "definition_id": definition.id,
+            "task_id": lineage_task(document, definition).id,
+        }
+
+        updated = apply_lineage_proposal(document, source, proposal)
+
+        self.assertEqual(
+            {(item.target, item.evidence.source) for item in updated.claims},
+            {
+                ("Customers", "coding_agent"),
+                ("Demo.Sales.Orders", "declared_reference"),
+            },
+        )
+
     def test_changed_source_is_explicitly_rejected(self) -> None:
         source = load_lineage_input(_FIXTURE)
         document = build_lineage("aw-sales", source)

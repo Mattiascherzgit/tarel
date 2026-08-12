@@ -11,6 +11,7 @@ import sys
 import tempfile
 from array import array
 from collections import defaultdict
+from collections.abc import Callable
 from pathlib import Path
 
 from tarel.annotations.states import DEFAULT_CONTEXT_ANNOTATION_STATES
@@ -46,12 +47,24 @@ class FileRetrievalIndex:
         embedder: EmbeddingBackend,
         model_path: Path,
         batch_size: int = 16,
+        progress: Callable[[int, int, str], None] | None = None,
     ) -> IndexBuildResult:
         documents = build_retrieval_documents(graph)
-        vectors = embedder.embed_documents(
-            tuple(document.text for document in documents),
-            batch_size=batch_size,
-        )
+        total = len(documents)
+        if progress is not None:
+            progress(0, total, "embedding")
+        vector_batches = []
+        for start in range(0, total, batch_size):
+            batch = documents[start : start + batch_size]
+            vector_batches.extend(
+                embedder.embed_documents(
+                    tuple(document.text for document in batch),
+                    batch_size=batch_size,
+                )
+            )
+            if progress is not None:
+                progress(min(start + len(batch), total), total, "embedding")
+        vectors = tuple(vector_batches)
         dimensions = _validate_vectors(vectors, expected_count=len(documents))
         metadata = IndexMetadata(
             contract_version=_CONTRACT_VERSION,
@@ -74,6 +87,8 @@ class FileRetrievalIndex:
         os.close(descriptor)
         temporary_path = Path(temporary_name)
         try:
+            if progress is not None:
+                progress(total, total, "writing")
             with sqlite3.connect(temporary_path) as connection:
                 _create_schema(connection)
                 connection.executemany(
@@ -106,6 +121,8 @@ class FileRetrievalIndex:
                 )
                 connection.commit()
             os.replace(temporary_path, path)
+            if progress is not None:
+                progress(total, total, "ready")
         except (OSError, sqlite3.Error) as exc:
             temporary_path.unlink(missing_ok=True)
             raise RetrievalFailure(

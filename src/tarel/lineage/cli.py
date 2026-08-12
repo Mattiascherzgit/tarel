@@ -542,6 +542,12 @@ def _render_upstream_trace(payload: dict[str, object], *, output_format: str) ->
                 f"{indent}<- {source['reference']} "
                 f"({hop['relation']}{detail}; {hop['state']}{role}{granularity})"
             )
+            evidence = hop.get("evidence")
+            if isinstance(evidence, dict) and evidence.get("reason"):
+                print(f"{indent}   evidence: {evidence['reason']}")
+            write_evidence = hop.get("write_evidence")
+            if isinstance(write_evidence, dict) and write_evidence.get("reason"):
+                print(f"{indent}   write evidence: {write_evidence['reason']}")
             description = source.get("description")
             description_kind = source.get("description_kind")
             annotation_state = source.get("annotation_state")

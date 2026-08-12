@@ -262,10 +262,19 @@ class GroundingBundle:
             "Origins: " + (", ".join(item.reference for item in self.trace.origins) or "none")
         )
         for hop in self.trace.hops:
-            lines.append(
+            line = (
                 f"- depth={hop.depth}: {hop.source.reference} -> {hop.target.reference} "
                 f"[{hop.relation}; state={hop.state}; lineage={hop.lineage or 'graph'}]"
             )
+            evidence = hop.evidence.reason if hop.evidence is not None else None
+            write_evidence = (
+                hop.write_evidence.reason if hop.write_evidence is not None else None
+            )
+            if evidence:
+                line += f"; evidence={evidence}"
+            if write_evidence:
+                line += f"; write_evidence={write_evidence}"
+            lines.append(line)
         lines.extend(f"Warning: {warning}" for warning in self.trace.warnings)
         if self.trace.truncated:
             lines.append("Warning: trace truncated by max_hops")

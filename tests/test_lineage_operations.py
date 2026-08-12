@@ -17,13 +17,57 @@ from tarel.lineage.contracts import LineageDocument, LineageFailure
 from tarel.lineage.core import apply_lineage_proposal, build_lineage
 from tarel.lineage.refresh import LineageRefreshReport, refresh_lineage
 from tarel.lineage.review import decide_lineage_item, list_lineage_items
-from tarel.lineage.source import LineageInput, SourceDefinition, SourceStep
+from tarel.lineage.source import LineageInput, SourceDefinition, SourceObservation, SourceStep
 from tarel.lineage.status import lineage_status
 from tarel.lineage.store import FileLineageStore
 from tarel.lineage.tasks import lineage_task, plan_lineage_tasks
 
 
 class LineageOperationsTests(TestCase):
+    def test_refresh_replaces_changed_declared_evidence_and_marks_validation_stale(self) -> None:
+        base = _source()
+        observation = SourceObservation(
+            definition_external_id=base.definitions[0].external_id,
+            operation="read",
+            target="dbo.SourceOrders",
+            source_reference="manifest:orders",
+            reason="The manifest declares this source.",
+            line_start=2,
+            line_end=2,
+        )
+        source = replace(base, observations=(observation,))
+        document = build_lineage("orders", source)
+        document, _ = decide_lineage_item(
+            document,
+            document.claims[0].id,
+            decision="validate",
+            reason="Checked against the manifest.",
+        )
+        changed = replace(
+            source,
+            observations=(
+                replace(
+                    observation,
+                    reason="The manifest and compiled SQL declare this source.",
+                ),
+            ),
+        )
+
+        refreshed, report = refresh_lineage(document, changed)
+
+        self.assertEqual(
+            refreshed.claims[0].evidence.reason,
+            "The manifest and compiled SQL declare this source.",
+        )
+        self.assertEqual(refreshed.claims[0].evidence.reference, "manifest:orders:2-2")
+        self.assertEqual(refreshed.claims[0].state, "review_required")
+        self.assertEqual(refreshed.claims[0].reviews[-1].decision, "validate")
+        self.assertEqual(report.review_required_claims, 1)
+        self.assertIn(
+            "declared_reference_evidence_changed",
+            {item.kind for item in report.changes},
+        )
+
     def test_refresh_preserves_reviewed_write_as_explicitly_stale_knowledge(self) -> None:
         source = _source()
         document = build_lineage("orders", source)
