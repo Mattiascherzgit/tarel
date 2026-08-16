@@ -4,7 +4,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/tarel)](https://pypi.org/project/tarel/)
 [![Python](https://img.shields.io/pypi/pyversions/tarel)](https://pypi.org/project/tarel/)
-[![CI](https://github.com/Mattiascherzgit/tarel/actions/workflows/ci.yml/badge.svg)](https://github.com/Mattiascherzgit/tarel/actions/workflows/ci.yml)
+[![CI](https://github.com/mpsgitai/tarel/actions/workflows/ci.yml/badge.svg)](https://github.com/mpsgitai/tarel/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 TAREL maps the **semantic and lineage layer of complex information systems**. It is a local-first
@@ -31,7 +31,7 @@ databases · marts · workflow exports · reports
        precise context for humans and agents
 ```
 
-![TAREL semantic information space with reviewed metadata](https://raw.githubusercontent.com/Mattiascherzgit/tarel/master/docs/assets/semantic-space.png)
+![TAREL semantic information space with reviewed metadata](https://raw.githubusercontent.com/mpsgitai/tarel/master/docs/assets/semantic-space.png)
 
 *An annotated TPC-DS information space in the dependency-free local browser UI. Objects, fields,
 roles, grain, confidence, and review state remain inspectable.*
@@ -75,7 +75,7 @@ knowledge, review schema drift, and move from a report or measure back through E
 TAREL can begin with the object a user actually knows — a report, visual, measure, cube field, or
 mart column — and walk upstream across semantic and physical boundaries.
 
-![TAREL report-to-source lineage trace](https://raw.githubusercontent.com/Mattiascherzgit/tarel/master/docs/assets/report-lineage.png)
+![TAREL report-to-source lineage trace](https://raw.githubusercontent.com/mpsgitai/tarel/master/docs/assets/report-lineage.png)
 
 *A Power BI report measure traced through a semantic column, physical mart, dbt models, an extract,
 and five DWH origin tables. Draft state and the field-to-object granularity change remain visible.*
@@ -99,7 +99,7 @@ Generated semantics are proposals, not truth. The local browser guides reviewers
 meaning first while keeping field-level suggestions, evidence, provider provenance, warnings, and
 confidence available.
 
-![TAREL annotation review](https://raw.githubusercontent.com/Mattiascherzgit/tarel/master/docs/assets/annotation-review.png)
+![TAREL annotation review](https://raw.githubusercontent.com/mpsgitai/tarel/master/docs/assets/annotation-review.png)
 
 *Review, edit, approve, defer, or reject semantic proposals without sending the graph to a hosted
 UI. The browser makes no external requests.*
@@ -184,7 +184,7 @@ tarel ui retail-demo
 ```
 
 The demo intentionally contains abbreviated fact names and one missing relationship. Continue with
-the [complete Retail DWH walkthrough](https://github.com/Mattiascherzgit/tarel/blob/master/docs/retail-demo.md)
+the [complete Retail DWH walkthrough](https://github.com/mpsgitai/tarel/blob/master/docs/retail-demo.md)
 to sample evidence, propose annotations, review joins, enable hybrid retrieval, and reproduce schema
 drift.
 
@@ -213,7 +213,7 @@ dynamic_context = bundle.dynamic_prompt()
 The bundle maps every selected object to a logical read-only source and dialect. It never contains
 the source profile's config reference, resolved URL, password, sample rows, or provider key.
 
-See the [SDK guide](https://github.com/Mattiascherzgit/tarel/blob/master/docs/sdk.md) for workspaces,
+See the [SDK guide](https://github.com/mpsgitai/tarel/blob/master/docs/sdk.md) for workspaces,
 scope selection, lineage search, upstream tracing, reviews, vector indexes, and Space/Lineage UI
 projections.
 
@@ -315,7 +315,7 @@ CLI · Python SDK · local browser UI
 Contracts define truth, application use cases coordinate work, and adapters remain replaceable.
 `import tarel` is cheap and side-effect free; optional drivers load only inside their adapters.
 
-Read the [architecture guide](https://github.com/Mattiascherzgit/tarel/blob/master/docs/architecture.md)
+Read the [architecture guide](https://github.com/mpsgitai/tarel/blob/master/docs/architecture.md)
 for dependency direction, extension seams, persistence, grounding, and the shared CLI/SDK/UI path.
 
 Local state lives below the selected `.tarel/` root. Graphs and lineage contain metadata,
@@ -325,13 +325,13 @@ Git and agent-facing context.
 
 ## Documentation
 
-- [Architecture](https://github.com/Mattiascherzgit/tarel/blob/master/docs/architecture.md)
-- [Embedded Python SDK](https://github.com/Mattiascherzgit/tarel/blob/master/docs/sdk.md)
-- [Retail DWH demo](https://github.com/Mattiascherzgit/tarel/blob/master/docs/retail-demo.md)
-- [Local semantic retrieval](https://github.com/Mattiascherzgit/tarel/blob/master/docs/local-retrieval.md)
-- [Context packet contract](https://github.com/Mattiascherzgit/tarel/blob/master/docs/context-contract.md)
-- [Workspaces, systems, areas, and zones](https://github.com/Mattiascherzgit/tarel/blob/master/docs/workspaces.md)
-- [Change Radar](https://github.com/Mattiascherzgit/tarel/blob/master/docs/change-radar.md)
+- [Architecture](https://github.com/mpsgitai/tarel/blob/master/docs/architecture.md)
+- [Embedded Python SDK](https://github.com/mpsgitai/tarel/blob/master/docs/sdk.md)
+- [Retail DWH demo](https://github.com/mpsgitai/tarel/blob/master/docs/retail-demo.md)
+- [Local semantic retrieval](https://github.com/mpsgitai/tarel/blob/master/docs/local-retrieval.md)
+- [Context packet contract](https://github.com/mpsgitai/tarel/blob/master/docs/context-contract.md)
+- [Workspaces, systems, areas, and zones](https://github.com/mpsgitai/tarel/blob/master/docs/workspaces.md)
+- [Change Radar](https://github.com/mpsgitai/tarel/blob/master/docs/change-radar.md)
 
 ## Current boundaries
 
