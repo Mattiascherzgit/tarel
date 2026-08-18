@@ -196,6 +196,22 @@ class EnrichmentTests(TestCase):
             [(3, 6), (12, 6)],
         )
         self.assertEqual(len(result.workfile.transformed_join_candidates), 2)
+        self.assertEqual(
+            len(
+                {
+                    (item.pair.from_field, item.component_index)
+                    for item in result.workfile.transformed_join_candidates
+                }
+            ),
+            2,
+        )
+        self.assertEqual(
+            {
+                (item.pair.to_object, item.pair.to_field)
+                for item in result.workfile.transformed_join_candidates
+            },
+            {("D_KST", "KST_ID"), ("D_KTO", "KTO_ID")},
+        )
         self.assertEqual(len(result.persisted_candidates), 2)
         self.assertTrue(
             all(edge.metadata["state"] == "draft" for edge in result.persisted_candidates)
@@ -280,16 +296,24 @@ def _create_pattern_source(root: Path) -> None:
         connection.executescript(
             """
             CREATE TABLE D_KST (KST_ID INTEGER PRIMARY KEY);
+            CREATE TABLE D_KST_ALT (KST_ID INTEGER PRIMARY KEY);
             CREATE TABLE D_KTO (KTO_ID INTEGER PRIMARY KEY);
-            CREATE TABLE F_KEYS (COMPOSITE_KEY TEXT PRIMARY KEY);
+            CREATE TABLE D_ACCT (ACCT_KY INTEGER PRIMARY KEY);
+            CREATE TABLE F_KEYS (
+                COMPOSITE_KEY TEXT PRIMARY KEY,
+                EVENT_AT TEXT,
+                EDUCATION TEXT
+            );
             INSERT INTO D_KST VALUES (102020), (102021), (102022), (102023);
+            INSERT INTO D_KST_ALT VALUES (102020), (102021), (102022), (102023);
             INSERT INTO D_KTO VALUES (102000), (102001), (102002), (102003);
+            INSERT INTO D_ACCT VALUES (102020), (102021), (102022), (102023);
             INSERT INTO F_KEYS VALUES
-                ('KST102020KTO102000'),
-                ('KST102021KTO102001'),
-                ('KST102022KTO102002'),
-                ('KST102023KTO102003'),
-                ('legacy-key');
+                ('KST102020KTO102000', '2026-08-18T10:00:00', 'Bac + 5'),
+                ('KST102021KTO102001', '2026-08-19T11:00:00', 'Bac + 4'),
+                ('KST102022KTO102002', '2026-08-20T12:00:00', 'Bac + 3'),
+                ('KST102023KTO102003', '2026-08-21T13:00:00', 'Bac + 2'),
+                ('legacy-key', '2026-08-22T14:00:00', 'Bac + 1');
             """
         )
     config_path = demos / "keys.toml"

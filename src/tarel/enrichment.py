@@ -19,6 +19,17 @@ MIN_TRANSFORMED_OVERLAP = 2
 MIN_TRANSFORMED_SOURCE_COVERAGE = 0.6
 MIN_TRANSFORMED_TARGET_UNIQUENESS = 0.9
 _TOKEN = re.compile(r"[A-Za-z]+|\d+|[^A-Za-z\d]+")
+_KEY_FIELD_TOKEN = re.compile(
+    r"(?:^|_)(?:cd|code|id|identifier|key|ky|no|nr|number)(?:_|$)",
+    re.IGNORECASE,
+)
+_PATTERN_COMPONENT = re.compile(r"\{digits_\d+:\d+\}")
+_PATTERN_LITERAL = re.compile(r"[A-Za-z]{2,}")
+_SEMANTIC_TOKEN = re.compile(r"[A-Za-z0-9]+")
+_TEXTUAL_PATTERN_TYPES = frozenset({"char", "nchar", "nvarchar", "text", "varchar"})
+_GENERIC_KEY_TOKENS = frozenset(
+    {"CD", "CODE", "D", "F", "ID", "KEY", "KY", "NO", "NR", "NUMBER", "T", "V"}
+)
 _NUMERIC_TYPES = (
     "bigint",
     "decimal",
@@ -179,18 +190,26 @@ def infer_key_patterns(
 ]:
     observations: dict[tuple[str, str], _PatternObservation] = {}
     patterns: dict[str, list[KeyPatternProfile]] = defaultdict(list)
+    field_nodes = {
+        (str(node.metadata.get("object_id") or ""), node.label): node
+        for node in graph.nodes
+        if node.type == "field"
+    }
     for object_node in _object_nodes(graph):
         sample = samples.get(object_node.id)
         if sample is None:
             continue
         for field in sample.selected_fields:
+            field_node = field_nodes.get((object_node.id, field))
+            if field_node is None:
+                continue
             values = tuple(
                 str(row[field])
                 for row in sample.rows
                 if row.get(field) is not None and isinstance(row.get(field), str)
             )
             observation = _dominant_pattern(field, values)
-            if observation is None:
+            if observation is None or not _is_key_pattern(field_node, observation.profile):
                 continue
             observations[(object_node.id, field)] = observation
             patterns[object_node.id].append(observation.profile)
@@ -325,9 +344,62 @@ def _transformed_candidates(
                 )
                 if profile is not None:
                     candidates.append(profile)
+    return _conservative_candidates(candidates)
+
+
+def _is_key_pattern(field_node: GraphNode, profile: KeyPatternProfile) -> bool:
+    data_type = str(field_node.metadata.get("data_type") or "").lower()
+    base_type = data_type.split("(", 1)[0].strip()
+    if base_type not in _TEXTUAL_PATTERN_TYPES:
+        return False
+    if (
+        field_node.metadata.get("is_primary_key") is True
+        or field_node.metadata.get("is_foreign_key") is True
+        or _KEY_FIELD_TOKEN.search(field_node.label)
+    ):
+        return True
+    return (
+        len(profile.components) >= 2
+        and len(
+            _PATTERN_LITERAL.findall(_PATTERN_COMPONENT.sub("", profile.pattern))
+        )
+        >= 2
+    )
+
+
+def _conservative_candidates(
+    candidates: list[TransformedRelationshipProfile],
+) -> tuple[TransformedRelationshipProfile, ...]:
+    grouped: dict[
+        tuple[str, str, str, int],
+        list[TransformedRelationshipProfile],
+    ] = defaultdict(list)
+    for candidate in candidates:
+        grouped[
+            (
+                candidate.pair.from_namespace,
+                candidate.pair.from_object,
+                candidate.pair.from_field,
+                candidate.component_index,
+            )
+        ].append(candidate)
+    selected = [
+        min(
+            group,
+            key=lambda item: (
+                -item.source_coverage,
+                -item.target_uniqueness,
+                -item.overlap_count,
+                item.pair.to_namespace,
+                item.pair.to_object,
+                item.pair.to_field,
+            ),
+        )
+        for group in grouped.values()
+    ]
     return tuple(
         sorted(
-            candidates,
+            selected,
             key=lambda item: (
                 item.pair.from_namespace,
                 item.pair.from_object,
@@ -352,6 +424,13 @@ def _candidate_profile(
     target_values: tuple[object, ...],
     target_sample: SampleResult,
 ) -> TransformedRelationshipProfile | None:
+    if not _component_matches_target(
+        pattern.pattern,
+        component.index,
+        target_object.label,
+        target_field.label,
+    ):
+        return None
     numeric_target = _is_numeric_type(str(target_field.metadata.get("data_type") or ""))
     normalized_source = {_normalize_value(value, numeric=numeric_target) for value in source_values}
     normalized_target = {
@@ -390,6 +469,34 @@ def _candidate_profile(
         overlap_count=overlap_count,
         sample_row_limit=len(target_sample.rows),
     )
+
+
+def _component_matches_target(
+    pattern: str,
+    component_index: int,
+    target_object: str,
+    target_field: str,
+) -> bool:
+    components = tuple(_PATTERN_COMPONENT.finditer(pattern))
+    if not 1 <= component_index <= len(components):
+        return False
+    selected = components[component_index - 1]
+    previous_end = components[component_index - 2].end() if component_index > 1 else 0
+    literals = _PATTERN_LITERAL.findall(pattern[previous_end : selected.start()])
+    if not literals:
+        return False
+    cue = literals[-1].upper()
+    token_groups = [
+        [
+            token.upper()
+            for token in _SEMANTIC_TOKEN.findall(label)
+            if token.upper() not in _GENERIC_KEY_TOKENS
+        ]
+        for label in (target_object, target_field)
+    ]
+    tokens = {token for group in token_groups for token in group}
+    acronyms = {"".join(token[0] for token in group) for group in token_groups if group}
+    return cue in tokens or cue in acronyms
 
 
 def _normalize_value(value: object, *, numeric: bool) -> str | None:
