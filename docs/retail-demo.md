@@ -20,8 +20,30 @@ tarel connector sample sqlite \
   --schema main \
   --object F_SLS_01 \
   --limit 3
+
+# Aggregate profiles do not include small-domain values by default.
+tarel connector profile sqlite \
+  --config .tarel/demos/retail-dwh.toml \
+  --schema main \
+  --object D_CHNL \
+  --row-limit 10000
+
+# Explicitly allow observed values for complete small domains in this command result.
+tarel connector profile sqlite \
+  --config .tarel/demos/retail-dwh.toml \
+  --schema main \
+  --object D_CHNL \
+  --row-limit 10000 \
+  --include-values
+
 tarel source build retail-local retail-demo
 ```
+
+Profiles report bounded row coverage, null and distinct counts, min/max values, and text lengths.
+Unsupported columns remain visible as omissions. Profile output and raw table previews are ephemeral:
+TAREL does not copy them into the graph, retrieval index, or context packets. The separate
+`connector sample` command remains an explicit, read-permission-controlled preview and accepts at
+most ten rows.
 
 The graph contains date, product, customer, geography, reseller, currency, and channel dimensions;
 two sales facts; one return fact; a bridge-like mapping table; and a union view. `F_SLS_01` and
@@ -34,12 +56,17 @@ provider, then review the resulting drafts:
 ```bash
 tarel annotation next retail-demo \
   --samples 5 \
+  --profile-rows 10000 \
   --config .tarel/demos/retail-dwh.toml
 tarel annotation apply retail-demo --input proposal.json
 tarel annotation validate retail-demo main.F_SLS_01 \
   --include-fields \
   --reason "Reviewed against the demo schema and bounded samples."
 ```
+
+Profiles include bounded min/max observations. Add `--include-small-domain-values` only when the
+coding-agent task may additionally receive complete small-domain values. TAREL treats every
+observed value as protected annotation input and rejects a provider response that repeats it.
 
 Probe and persist the intentionally missing relationship candidate:
 

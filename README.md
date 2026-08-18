@@ -281,7 +281,7 @@ activates the package explicitly.
 | Command | Purpose |
 |---|---|
 | `tarel source` | Manage logical sources; probe, discover, build, and refresh |
-| `tarel connector` | Inspect, sample, and scaffold read-only adapters |
+| `tarel connector` | Inspect, profile, sample, and scaffold read-only adapters |
 | `tarel graph` | Build, refresh, inspect, and batch-annotate graphs |
 | `tarel annotation` | Plan, apply, edit, and review semantic proposals |
 | `tarel knowledge` | Attach bounded Markdown/TXT context to annotation scopes |

@@ -264,6 +264,89 @@ class SampleResult:
 
 
 @dataclass(frozen=True, slots=True)
+class ValueCount:
+    value: object
+    count: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {"count": self.count, "value": self.value}
+
+
+@dataclass(frozen=True, slots=True)
+class ColumnProfile:
+    name: str
+    data_type: str
+    status: str
+    reason: str | None
+    non_null_count: int | None
+    null_count: int | None
+    distinct_count: int | None
+    min_value: object | None
+    max_value: object | None
+    min_length: int | None
+    max_length: int | None
+    values: tuple[ValueCount, ...] = ()
+    values_complete: bool = False
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "data_type": self.data_type,
+            "distinct_count": self.distinct_count,
+            "max_length": self.max_length,
+            "max_value": self.max_value,
+            "min_length": self.min_length,
+            "min_value": self.min_value,
+            "name": self.name,
+            "non_null_count": self.non_null_count,
+            "null_count": self.null_count,
+            "reason": self.reason,
+            "status": self.status,
+            "values": [item.to_dict() for item in self.values],
+            "values_complete": self.values_complete,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectProfileRequest:
+    url: str = field(repr=False)
+    database: str | None
+    namespace: str
+    object_name: str
+    row_limit: int = 10_000
+    small_domain_limit: int = 20
+    include_values: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ObjectProfileResult:
+    connector: str
+    catalog: str
+    namespace: str
+    object_name: str
+    row_limit: int
+    rows_profiled: int
+    complete: bool
+    ordered_by: tuple[str, ...]
+    columns: tuple[ColumnProfile, ...]
+    includes_values: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "catalog": self.catalog,
+            "columns": [item.to_dict() for item in self.columns],
+            "complete": self.complete,
+            "connector": self.connector,
+            "includes_values": self.includes_values,
+            "namespace": self.namespace,
+            "object_name": self.object_name,
+            "ordered_by": list(self.ordered_by),
+            "row_limit": self.row_limit,
+            "rows_profiled": self.rows_profiled,
+            "status": "ok",
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class RelationshipPair:
     from_namespace: str
     from_object: str
@@ -351,6 +434,10 @@ class Connector(Protocol):
     def discover_catalog(self, request: CatalogRequest) -> CatalogResult: ...
 
     def sample_rows(self, request: SampleRequest) -> SampleResult: ...
+
+
+class ObjectProfileConnector(Protocol):
+    def profile_object(self, request: ObjectProfileRequest) -> ObjectProfileResult: ...
 
 
 class RelationshipProbeConnector(Protocol):

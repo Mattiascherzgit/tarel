@@ -15,7 +15,10 @@ from tarel.connectors.contracts import (
     CatalogObject,
     CatalogRelationship,
     CatalogResult,
+    ColumnProfile,
+    ObjectProfileResult,
     SampleResult,
+    ValueCount,
 )
 from tarel.graph.build import build_graph_from_catalog
 from tarel.providers.config import (
@@ -89,7 +92,7 @@ class AnnotationFlowTests(TestCase):
 
         task = plan_annotation_tasks(graph, samples_by_target={customer_id: sample})[0]
         serialized_context = task.request.messages[1].content.split("\n\n", 1)[1]
-        context = json.loads(serialized_context.split("\n\nSAMPLE POLICY:", 1)[0])
+        context = json.loads(serialized_context.split("\n\nOBSERVED-VALUE POLICY:", 1)[0])
 
         self.assertEqual(context["object"]["primary_key"], ["CustomerId"])
         self.assertEqual(context["object"]["technical_description"], "Imported customer records.")
@@ -98,6 +101,60 @@ class AnnotationFlowTests(TestCase):
         self.assertEqual(task.protected_values, ("1",))
         with self.assertRaisesRegex(AnnotationFailure, "protected sample value"):
             _reject_protected_values({"evidence": {"value": "1"}}, task.protected_values)
+
+    def test_task_accepts_ephemeral_profile_without_persisting_it_in_graph(self) -> None:
+        catalog = CatalogResult(
+            connector="test",
+            source_type="database",
+            catalog="Demo",
+            dialect="ansi",
+            objects=(
+                CatalogObject(
+                    namespace="sales",
+                    name="Order",
+                    kind="table",
+                    fields=(CatalogField("Status", 1, "text", False),),
+                ),
+            ),
+        )
+        graph = build_graph_from_catalog("demo", catalog)
+        target_id = next(node.id for node in graph.nodes if node.label == "sales.Order")
+        profile = ObjectProfileResult(
+            connector="test",
+            catalog="Demo",
+            namespace="sales",
+            object_name="Order",
+            row_limit=100,
+            rows_profiled=100,
+            complete=False,
+            ordered_by=("Status",),
+            columns=(
+                ColumnProfile(
+                    name="Status",
+                    data_type="text",
+                    status="profiled",
+                    reason=None,
+                    non_null_count=99,
+                    null_count=1,
+                    distinct_count=2,
+                    min_value="CLOSED",
+                    max_value="OPEN",
+                    min_length=4,
+                    max_length=6,
+                    values=(ValueCount("OPEN", 60), ValueCount("CLOSED", 39)),
+                    values_complete=True,
+                ),
+            ),
+            includes_values=True,
+        )
+
+        task = plan_annotation_tasks(graph, profiles_by_target={target_id: profile})[0]
+        context_text = task.request.messages[1].content.split("\n\n", 1)[1]
+        context = json.loads(context_text.split("\n\nOBSERVED-VALUE POLICY:", 1)[0])
+
+        self.assertEqual(context["profile"]["columns"][0]["distinct_count"], 2)
+        self.assertEqual(task.protected_values, ("CLOSED", "OPEN"))
+        self.assertNotIn("profile", graph.node_by_id()[target_id].metadata)
 
     def test_agent_proposal_round_trip(self) -> None:
         catalog = CatalogResult(

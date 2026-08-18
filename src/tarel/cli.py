@@ -58,6 +58,7 @@ from tarel.application import (
     plan_annotations_use_case,
     plan_focus_annotations_use_case,
     probe_connector_use_case,
+    profile_connector_use_case,
     refresh_graph_use_case,
     resolve_knowledge_use_case,
     resolve_workspace_scope_use_case,
@@ -76,6 +77,7 @@ from tarel.connectors.contracts import (
     CatalogResult,
     ConnectorCheck,
     ConnectorFailure,
+    ObjectProfileResult,
     ProbeResult,
     RelationshipPairProfile,
     SampleResult,
@@ -417,6 +419,24 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--object", dest="object_name", required=True)
     sample.add_argument("--limit", type=int, default=3)
     _add_format_argument(sample)
+
+    profile = connector_commands.add_parser(
+        "profile",
+        help="Read bounded aggregate column profiles from one object.",
+    )
+    profile.add_argument("name", help="Connector name, for example sqlserver.")
+    profile.add_argument("--config", type=Path, required=True, help="Private TOML configuration.")
+    profile.add_argument("--database", help="Override the configured database.")
+    profile.add_argument("--namespace", "--schema", dest="namespace", required=True)
+    profile.add_argument("--object", dest="object_name", required=True)
+    profile.add_argument("--row-limit", type=int, default=10_000)
+    profile.add_argument("--small-domain-limit", type=int, default=20)
+    profile.add_argument(
+        "--include-values",
+        action="store_true",
+        help="Explicitly allow values for complete small domains in this ephemeral result.",
+    )
+    _add_format_argument(profile)
 
     knowledge = subcommands.add_parser(
         "knowledge",
@@ -819,6 +839,12 @@ def build_parser() -> argparse.ArgumentParser:
     graph_annotate.add_argument("--model")
     graph_annotate.add_argument("--timeout", type=float, default=120.0)
     graph_annotate.add_argument("--samples", type=int, default=0)
+    graph_annotate.add_argument("--profile-rows", type=int, default=0)
+    graph_annotate.add_argument(
+        "--include-small-domain-values",
+        action="store_true",
+        help="Explicitly allow small-domain values in ephemeral annotation input.",
+    )
     graph_annotate.add_argument("--config", type=Path, help="Private connector configuration.")
     graph_annotate.add_argument("--include-annotated", action="store_true")
     graph_annotate.add_argument("--dry-run", action="store_true")
@@ -854,6 +880,12 @@ def build_parser() -> argparse.ArgumentParser:
     annotation_next.add_argument("--object", action="append", dest="objects")
     annotation_next.add_argument("--include-annotated", action="store_true")
     annotation_next.add_argument("--samples", type=int, default=0)
+    annotation_next.add_argument("--profile-rows", type=int, default=0)
+    annotation_next.add_argument(
+        "--include-small-domain-values",
+        action="store_true",
+        help="Explicitly allow small-domain values in ephemeral annotation input.",
+    )
     annotation_next.add_argument("--config", type=Path, help="Private connector configuration.")
     _add_annotation_knowledge_arguments(annotation_next)
 
@@ -1333,6 +1365,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             _render_sample(result, output_format=args.format)
             return 0
 
+        if args.command == "connector" and args.connector_command == "profile":
+            result = profile_connector_use_case(
+                args.name,
+                config_path=args.config,
+                database=args.database,
+                namespace=args.namespace,
+                object_name=args.object_name,
+                row_limit=args.row_limit,
+                small_domain_limit=args.small_domain_limit,
+                include_values=args.include_values,
+            )
+            _render_profile(result, output_format=args.format)
+            return 0
+
         if args.command == "knowledge" and args.knowledge_command == "add":
             result = add_knowledge_document_use_case(
                 args.id,
@@ -1759,6 +1805,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     limit=args.limit,
                     missing_only=not args.include_annotated,
                     sample_limit=args.samples,
+                    profile_row_limit=args.profile_rows,
+                    include_small_domain_values=args.include_small_domain_values,
                     config_path=args.config,
                     knowledge_mode=args.knowledge,
                     knowledge_document_ids=tuple(args.knowledge_documents or ()),
@@ -1771,6 +1819,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"warning: up to {args.samples} sampled rows per object will be "
                     f"sent to provider profile {args.provider}",
+                    file=sys.stderr,
+                )
+            if args.profile_rows:
+                detail = (
+                    " with permission for complete small-domain values"
+                    if args.include_small_domain_values
+                    else ""
+                )
+                print(
+                    f"warning: bounded column profiles{detail} will be sent to "
+                    f"provider profile {args.provider}",
                     file=sys.stderr,
                 )
             if args.knowledge == "scoped" or args.knowledge_documents:
@@ -1794,6 +1853,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model=args.model,
                 timeout=args.timeout,
                 sample_limit=args.samples,
+                profile_row_limit=args.profile_rows,
+                include_small_domain_values=args.include_small_domain_values,
                 config_path=args.config,
                 knowledge_mode=args.knowledge,
                 knowledge_document_ids=tuple(args.knowledge_documents or ()),
@@ -1849,6 +1910,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "in the coding-agent task",
                     file=sys.stderr,
                 )
+            if args.profile_rows:
+                detail = (
+                    " with permission for complete small-domain values"
+                    if args.include_small_domain_values
+                    else ""
+                )
+                print(
+                    f"warning: bounded column profiles{detail} will be included in the "
+                    "coding-agent task",
+                    file=sys.stderr,
+                )
             if args.knowledge == "scoped" or args.knowledge_documents:
                 print(
                     "warning: bounded knowledge documents will be included in the "
@@ -1863,6 +1935,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     limit=1,
                     missing_only=not args.include_annotated,
                     sample_limit=args.samples,
+                    profile_row_limit=args.profile_rows,
+                    include_small_domain_values=args.include_small_domain_values,
                     config_path=args.config,
                     knowledge_mode=args.knowledge,
                     knowledge_document_ids=tuple(args.knowledge_documents or ()),
@@ -1877,6 +1951,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     limit=1,
                     missing_only=not args.include_annotated,
                     sample_limit=args.samples,
+                    profile_row_limit=args.profile_rows,
+                    include_small_domain_values=args.include_small_domain_values,
                     config_path=args.config,
                     knowledge_mode=args.knowledge,
                     knowledge_document_ids=tuple(args.knowledge_documents or ()),
@@ -2399,6 +2475,29 @@ def _render_sample(result: SampleResult, *, output_format: str) -> None:
     print(f"Truncated values: {'yes' if result.truncated_values else 'no'}")
     for row in result.rows:
         print(json.dumps(row, ensure_ascii=False, sort_keys=True))
+
+
+def _render_profile(result: ObjectProfileResult, *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(result.to_dict(), indent=2, sort_keys=True))
+        return
+    print(f"Object: {result.namespace}.{result.object_name}")
+    print(f"Rows profiled: {result.rows_profiled}")
+    print(f"Complete: {'yes' if result.complete else 'no'}")
+    print(f"Ordered by: {', '.join(result.ordered_by)}")
+    print(f"Values included: {'yes' if result.includes_values else 'no'}")
+    for column in result.columns:
+        if column.status != "profiled":
+            print(f"{column.name} [{column.data_type}]: omitted ({column.reason})")
+            continue
+        print(
+            f"{column.name} [{column.data_type}]: non-null={column.non_null_count}, "
+            f"null={column.null_count}, distinct={column.distinct_count}, "
+            f"min={column.min_value!r}, max={column.max_value!r}"
+        )
+        if column.values:
+            rendered = ", ".join(f"{item.value!r} ({item.count})" for item in column.values)
+            print(f"  values: {rendered}")
 
 
 def _provider_api_key(name: str, *, adapter: str, from_env: bool) -> str:

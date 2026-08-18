@@ -16,8 +16,11 @@ from tarel.connectors.contracts import (
     CatalogRelationship,
     CatalogRequest,
     CatalogResult,
+    ColumnProfile,
     ConnectorFailure,
     ConnectorManifest,
+    ObjectProfileRequest,
+    ObjectProfileResult,
     ProbeRequest,
     ProbeResult,
     RelationshipPair,
@@ -26,6 +29,7 @@ from tarel.connectors.contracts import (
     RelationshipProbeResult,
     SampleRequest,
     SampleResult,
+    ValueCount,
 )
 
 _PROBE_SQL = """
@@ -414,6 +418,96 @@ class SqlServerConnector:
             truncated_values=truncated,
         )
 
+    def profile_object(self, request: ObjectProfileRequest) -> ObjectProfileResult:
+        _validate_profile_request(request)
+        target = _parse_target(request)
+        try:
+            import pymssql
+        except ImportError as exc:
+            raise ConnectorFailure(
+                "missing_dependency",
+                "SQL Server requires the optional pymssql dependency.",
+            ) from exc
+
+        connection: Any | None = None
+        cursor: Any | None = None
+        try:
+            connection = pymssql.connect(
+                server=target.host,
+                port=str(target.port),
+                user=target.username,
+                password=target.password,
+                database=target.database,
+                login_timeout=5,
+                timeout=30,
+                as_dict=True,
+            )
+            cursor = connection.cursor(as_dict=True)
+            cursor.execute(_SAMPLE_FIELDS_SQL, (request.namespace, request.object_name))
+            field_rows = cursor.fetchall()
+            if not field_rows:
+                raise ConnectorFailure(
+                    "object_not_found",
+                    f"SQL Server object not found: {request.namespace}.{request.object_name}",
+                )
+            selected, _omitted, primary_keys = _sample_fields(field_rows)
+            ordered_by = primary_keys or selected[:1]
+            if not ordered_by:
+                raise ConnectorFailure(
+                    "no_profile_fields",
+                    f"No bounded profile fields are available for "
+                    f"{request.namespace}.{request.object_name}.",
+                )
+            cursor.execute(
+                _profile_row_count_query(request, ordered_by, request.row_limit + 1)
+            )
+            count_row = cursor.fetchone()
+            if count_row is None:
+                raise ConnectorFailure(
+                    "profiling_failed",
+                    "SQL Server profiling returned no bounded row count.",
+                )
+            observed_rows = int(count_row["row_count"])
+            complete = observed_rows <= request.row_limit
+            columns = tuple(
+                _profile_column(
+                    cursor,
+                    request,
+                    field_row,
+                    ordered_by,
+                    profile_complete=complete,
+                )
+                for field_row in field_rows
+            )
+        except ConnectorFailure:
+            raise
+        except Exception as exc:
+            raise ConnectorFailure(
+                "profiling_failed",
+                f"SQL Server profiling failed for {target.host}/{target.database}/"
+                f"{request.namespace}.{request.object_name} ({type(exc).__name__}).",
+            ) from exc
+        finally:
+            if cursor is not None:
+                with suppress(Exception):
+                    cursor.close()
+            if connection is not None:
+                with suppress(Exception):
+                    connection.close()
+
+        return ObjectProfileResult(
+            connector=self.manifest.name,
+            catalog=target.database,
+            namespace=request.namespace,
+            object_name=request.object_name,
+            row_limit=request.row_limit,
+            rows_profiled=min(observed_rows, request.row_limit),
+            complete=complete,
+            ordered_by=ordered_by,
+            columns=columns,
+            includes_values=any(column.values for column in columns),
+        )
+
     def probe_relationships(self, request: RelationshipProbeRequest) -> RelationshipProbeResult:
         if not 1 <= len(request.pairs) <= 50:
             raise ConnectorFailure(
@@ -496,7 +590,13 @@ def create_connector(manifest: ConnectorManifest) -> SqlServerConnector:
 
 
 def _parse_target(
-    request: ProbeRequest | CatalogRequest | SampleRequest | RelationshipProbeRequest,
+    request: (
+        ProbeRequest
+        | CatalogRequest
+        | SampleRequest
+        | ObjectProfileRequest
+        | RelationshipProbeRequest
+    ),
 ) -> _ConnectionTarget:
     parsed = urlsplit(request.url)
     if parsed.scheme != "mssql+pymssql":
@@ -683,6 +783,153 @@ def _sample_value(value: Any) -> tuple[object, bool]:
     if len(text) > _MAX_SAMPLE_VALUE_CHARS:
         return text[:_MAX_SAMPLE_VALUE_CHARS] + "…", True
     return text, False
+
+
+def _validate_profile_request(request: ObjectProfileRequest) -> None:
+    if not 1 <= request.row_limit <= 100_000:
+        raise ConnectorFailure(
+            "invalid_profile_row_limit",
+            "Object profile row limit must be between 1 and 100000.",
+        )
+    if not 1 <= request.small_domain_limit <= 100:
+        raise ConnectorFailure(
+            "invalid_small_domain_limit",
+            "Small-domain limit must be between 1 and 100.",
+        )
+
+
+def _profile_row_count_query(
+    request: ObjectProfileRequest,
+    ordered_by: tuple[str, ...],
+    limit: int,
+) -> str:
+    qualified_name = (
+        f"{_quote_identifier(request.namespace)}.{_quote_identifier(request.object_name)}"
+    )
+    order_clause = ", ".join(_quote_identifier(name) for name in ordered_by)
+    return (
+        "SELECT COUNT_BIG(1) AS row_count FROM ("
+        f"SELECT TOP ({limit}) 1 AS present FROM {qualified_name} ORDER BY {order_clause}"
+        ") AS profile_rows"
+    )
+
+
+def _profile_column(
+    cursor: Any,
+    request: ObjectProfileRequest,
+    field_row: dict[str, Any],
+    ordered_by: tuple[str, ...],
+    *,
+    profile_complete: bool,
+) -> ColumnProfile:
+    name = str(field_row["field_name"])
+    type_name = str(field_row["type_name"]).lower()
+    data_type = _format_data_type(field_row)
+    max_length = int(field_row["max_length"])
+    if (
+        type_name in _UNSAFE_SAMPLE_TYPES
+        or max_length == -1
+        or (max_length > 1024 and max_length != 0)
+    ):
+        return ColumnProfile(
+            name=name,
+            data_type=data_type,
+            status="omitted",
+            reason="unsupported_type",
+            non_null_count=None,
+            null_count=None,
+            distinct_count=None,
+            min_value=None,
+            max_value=None,
+            min_length=None,
+            max_length=None,
+        )
+    qualified_name = (
+        f"{_quote_identifier(request.namespace)}.{_quote_identifier(request.object_name)}"
+    )
+    field = _quote_identifier(name)
+    order_clause = ", ".join(_quote_identifier(item) for item in ordered_by)
+    value_expression = _profile_value_expression(field, type_name)
+    length_expressions = (
+        "MIN(LEN(value)) AS min_length, MAX(LEN(value)) AS max_length"
+        if type_name in {"char", "nchar", "varchar", "nvarchar"}
+        else "NULL AS min_length, NULL AS max_length"
+    )
+    query = f"""
+WITH profile_rows AS (
+    SELECT TOP ({request.row_limit}) {value_expression} AS value
+    FROM {qualified_name}
+    ORDER BY {order_clause}
+)
+SELECT
+    COUNT_BIG(value) AS non_null_count,
+    COUNT_BIG(1) - COUNT_BIG(value) AS null_count,
+    COUNT_BIG(DISTINCT value) AS distinct_count,
+    MIN(value) AS min_value,
+    MAX(value) AS max_value,
+    {length_expressions}
+FROM profile_rows
+"""
+    cursor.execute(query)
+    row = cursor.fetchone()
+    if row is None:
+        raise ConnectorFailure(
+            "profiling_failed",
+            f"SQL Server returned no profile for {request.namespace}.{request.object_name}.{name}.",
+        )
+    distinct_count = int(row["distinct_count"] or 0)
+    values: tuple[ValueCount, ...] = ()
+    values_complete = False
+    if (
+        request.include_values
+        and profile_complete
+        and distinct_count <= request.small_domain_limit
+    ):
+        cursor.execute(
+            f"""
+WITH profile_rows AS (
+    SELECT TOP ({request.row_limit}) {value_expression} AS value
+    FROM {qualified_name}
+    ORDER BY {order_clause}
+)
+SELECT value, COUNT_BIG(1) AS value_count
+FROM profile_rows
+WHERE value IS NOT NULL
+GROUP BY value
+ORDER BY value_count DESC, value
+"""
+        )
+        values = tuple(
+            ValueCount(
+                value=_sample_value(item.get("value"))[0],
+                count=int(item["value_count"]),
+            )
+            for item in cursor.fetchall()
+        )
+        values_complete = profile_complete
+    return ColumnProfile(
+        name=name,
+        data_type=data_type,
+        status="profiled",
+        reason=None,
+        non_null_count=int(row["non_null_count"] or 0),
+        null_count=int(row["null_count"] or 0),
+        distinct_count=distinct_count,
+        min_value=_sample_value(row.get("min_value"))[0],
+        max_value=_sample_value(row.get("max_value"))[0],
+        min_length=int(row["min_length"]) if row.get("min_length") is not None else None,
+        max_length=int(row["max_length"]) if row.get("max_length") is not None else None,
+        values=values,
+        values_complete=values_complete,
+    )
+
+
+def _profile_value_expression(field: str, type_name: str) -> str:
+    if type_name == "bit":
+        return f"CONVERT(int, {field})"
+    if type_name == "uniqueidentifier":
+        return f"CONVERT(nvarchar(36), {field})"
+    return field
 
 
 def _quote_identifier(identifier: str) -> str:

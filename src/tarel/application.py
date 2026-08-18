@@ -33,6 +33,9 @@ from tarel.connectors.contracts import (
     CatalogResult,
     ConnectorCheck,
     ConnectorFailure,
+    ObjectProfileConnector,
+    ObjectProfileRequest,
+    ObjectProfileResult,
     ProbeRequest,
     ProbeResult,
     RelationshipPair,
@@ -330,6 +333,45 @@ def sample_connector_use_case(
             namespace=namespace,
             object_name=object_name,
             limit=limit,
+        )
+    )
+
+
+def profile_connector_use_case(
+    name: str,
+    *,
+    config_path: Path | None,
+    database: str | None,
+    namespace: str,
+    object_name: str,
+    row_limit: int,
+    small_domain_limit: int = 20,
+    include_values: bool = False,
+) -> ObjectProfileResult:
+    config = _read_config(config_path)
+    section = config.get(name, {})
+    if not isinstance(section, dict):
+        raise ConnectorFailure("invalid_config", f"Configuration section [{name}] must be a table.")
+    url = _connection_url(name, section)
+    selected_database = database or _optional_string(section.get("default_database"))
+    connector = load_connector(name)
+    if "profile_object" not in connector.manifest.capabilities or not hasattr(
+        connector, "profile_object"
+    ):
+        raise ConnectorFailure(
+            "unsupported_capability",
+            f"Connector {name} does not support object profiles.",
+        )
+    profiler = cast(ObjectProfileConnector, connector)
+    return profiler.profile_object(
+        ObjectProfileRequest(
+            url=url,
+            database=selected_database,
+            namespace=namespace,
+            object_name=object_name,
+            row_limit=row_limit,
+            small_domain_limit=small_domain_limit,
+            include_values=include_values,
         )
     )
 
@@ -1481,6 +1523,8 @@ def plan_annotations_use_case(
     limit: int | None = None,
     missing_only: bool = True,
     sample_limit: int = 0,
+    profile_row_limit: int = 0,
+    include_small_domain_values: bool = False,
     config_path: Path | None = None,
     knowledge_mode: str = "none",
     knowledge_document_ids: tuple[str, ...] = (),
@@ -1496,6 +1540,8 @@ def plan_annotations_use_case(
         limit=limit,
         missing_only=missing_only,
         sample_limit=sample_limit,
+        profile_row_limit=profile_row_limit,
+        include_small_domain_values=include_small_domain_values,
         config_path=config_path,
         knowledge_mode=knowledge_mode,
         knowledge_document_ids=knowledge_document_ids,
@@ -1513,6 +1559,8 @@ def plan_focus_annotations_use_case(
     limit: int | None = None,
     missing_only: bool = True,
     sample_limit: int = 0,
+    profile_row_limit: int = 0,
+    include_small_domain_values: bool = False,
     config_path: Path | None = None,
     knowledge_mode: str = "none",
     knowledge_document_ids: tuple[str, ...] = (),
@@ -1553,6 +1601,8 @@ def plan_focus_annotations_use_case(
                 limit=None,
                 missing_only=missing_only,
                 sample_limit=sample_limit,
+                profile_row_limit=profile_row_limit,
+                include_small_domain_values=include_small_domain_values,
                 config_path=config_path,
                 knowledge_mode=knowledge_mode,
                 knowledge_document_ids=knowledge_document_ids,
@@ -1664,6 +1714,8 @@ def run_annotation_batch_use_case(
     model: str | None = None,
     timeout: float = 120.0,
     sample_limit: int = 0,
+    profile_row_limit: int = 0,
+    include_small_domain_values: bool = False,
     config_path: Path | None = None,
     knowledge_mode: str = "none",
     knowledge_document_ids: tuple[str, ...] = (),
@@ -1681,6 +1733,8 @@ def run_annotation_batch_use_case(
         limit=limit,
         missing_only=missing_only,
         sample_limit=sample_limit,
+        profile_row_limit=profile_row_limit,
+        include_small_domain_values=include_small_domain_values,
         config_path=config_path,
         knowledge_mode=knowledge_mode,
         knowledge_document_ids=knowledge_document_ids,
@@ -1714,6 +1768,8 @@ def _plan_graph_annotations(
     limit: int | None,
     missing_only: bool,
     sample_limit: int,
+    profile_row_limit: int,
+    include_small_domain_values: bool,
     config_path: Path | None,
     knowledge_mode: str,
     knowledge_document_ids: tuple[str, ...],
@@ -1723,6 +1779,16 @@ def _plan_graph_annotations(
 ) -> tuple[AnnotationTask, ...]:
     if not 0 <= sample_limit <= 10:
         raise ConnectorFailure("invalid_sample_limit", "Sample limit must be between 0 and 10.")
+    if not 0 <= profile_row_limit <= 100_000:
+        raise ConnectorFailure(
+            "invalid_profile_row_limit",
+            "Annotation profile row limit must be between 0 and 100000.",
+        )
+    if include_small_domain_values and profile_row_limit == 0:
+        raise ConnectorFailure(
+            "small_domain_values_without_profile",
+            "Small-domain values require a positive annotation profile row limit.",
+        )
     tasks = plan_annotation_tasks(
         graph,
         namespace=namespace,
@@ -1732,6 +1798,7 @@ def _plan_graph_annotations(
     )
     node_by_id = graph.node_by_id()
     samples: dict[str, SampleResult] = {}
+    profiles: dict[str, ObjectProfileResult] = {}
     if sample_limit:
         for task in tasks:
             node = node_by_id[task.target_id]
@@ -1742,6 +1809,18 @@ def _plan_graph_annotations(
                 namespace=str(node.metadata["namespace"]),
                 object_name=str(node.metadata["name"]),
                 limit=sample_limit,
+            )
+    if profile_row_limit:
+        for task in tasks:
+            node = node_by_id[task.target_id]
+            profiles[task.target_id] = profile_connector_use_case(
+                graph.connector,
+                config_path=config_path,
+                database=graph.catalog,
+                namespace=str(node.metadata["namespace"]),
+                object_name=str(node.metadata["name"]),
+                row_limit=profile_row_limit,
+                include_values=include_small_domain_values,
             )
     knowledge = _knowledge_contexts_for_tasks(
         graph,
@@ -1759,6 +1838,7 @@ def _plan_graph_annotations(
         limit=limit,
         missing_only=missing_only,
         samples_by_target=samples,
+        profiles_by_target=profiles,
         knowledge_by_target=knowledge,
     )
 

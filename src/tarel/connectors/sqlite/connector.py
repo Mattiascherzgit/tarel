@@ -13,8 +13,11 @@ from tarel.connectors.contracts import (
     CatalogRelationship,
     CatalogRequest,
     CatalogResult,
+    ColumnProfile,
     ConnectorFailure,
     ConnectorManifest,
+    ObjectProfileRequest,
+    ObjectProfileResult,
     ProbeRequest,
     ProbeResult,
     RelationshipPair,
@@ -23,6 +26,7 @@ from tarel.connectors.contracts import (
     RelationshipProbeResult,
     SampleRequest,
     SampleResult,
+    ValueCount,
 )
 
 _MAX_SAMPLE_FIELDS = 32
@@ -139,6 +143,56 @@ class SqliteConnector:
             ordered_by=ordered_by,
             rows=rows,
             truncated_values=truncated,
+        )
+
+    def profile_object(self, request: ObjectProfileRequest) -> ObjectProfileResult:
+        _validate_profile_request(request)
+        _validate_namespace(request.namespace)
+        path = _database_path(request.url)
+        try:
+            with closing(_connect_read_only(path)) as connection:
+                _require_object(connection, request.object_name)
+                fields = _table_fields(connection, request.object_name)
+                ordered_by = _profile_order(fields)
+                observed_rows = _bounded_row_count(
+                    connection,
+                    request.object_name,
+                    ordered_by,
+                    request.row_limit + 1,
+                )
+                complete = observed_rows <= request.row_limit
+                columns = tuple(
+                    _profile_column(
+                        connection,
+                        request.object_name,
+                        field,
+                        ordered_by=ordered_by,
+                        row_limit=request.row_limit,
+                        small_domain_limit=request.small_domain_limit,
+                        include_values=request.include_values,
+                        profile_complete=complete,
+                    )
+                    for field in fields
+                )
+        except ConnectorFailure:
+            raise
+        except sqlite3.Error as exc:
+            raise ConnectorFailure(
+                "profiling_failed",
+                f"SQLite profiling failed for main.{request.object_name} "
+                f"({type(exc).__name__}).",
+            ) from exc
+        return ObjectProfileResult(
+            connector=self.manifest.name,
+            catalog=request.database or path.stem,
+            namespace="main",
+            object_name=request.object_name,
+            row_limit=request.row_limit,
+            rows_profiled=min(observed_rows, request.row_limit),
+            complete=complete,
+            ordered_by=ordered_by,
+            columns=columns,
+            includes_values=any(column.values for column in columns),
         )
 
     def probe_relationships(self, request: RelationshipProbeRequest) -> RelationshipProbeResult:
@@ -316,6 +370,124 @@ def _profile_pair(
         overlap_count=len(source_distinct & target_distinct),
         profile_row_limit=row_limit,
     )
+
+
+def _validate_profile_request(request: ObjectProfileRequest) -> None:
+    if not 1 <= request.row_limit <= 100_000:
+        raise ConnectorFailure(
+            "invalid_profile_row_limit",
+            "Object profile row limit must be between 1 and 100000.",
+        )
+    if not 1 <= request.small_domain_limit <= 100:
+        raise ConnectorFailure(
+            "invalid_small_domain_limit",
+            "Small-domain limit must be between 1 and 100.",
+        )
+
+
+def _profile_order(fields: list[sqlite3.Row]) -> tuple[str, ...]:
+    primary_keys = tuple(
+        str(row["name"])
+        for row in sorted(fields, key=lambda item: int(item["pk"]) or 9999)
+        if int(row["pk"]) > 0
+    )
+    return primary_keys or tuple(str(row["name"]) for row in fields[:1])
+
+
+def _bounded_row_count(
+    connection: sqlite3.Connection,
+    object_name: str,
+    ordered_by: tuple[str, ...],
+    limit: int,
+) -> int:
+    query = (
+        "SELECT COUNT(1) FROM ("
+        f"SELECT 1 FROM {_quote(object_name)} "
+        f"ORDER BY {', '.join(_quote(name) for name in ordered_by)} LIMIT ?"
+        ") AS profile_rows"
+    )
+    return int(connection.execute(query, (limit,)).fetchone()[0])
+
+
+def _profile_column(
+    connection: sqlite3.Connection,
+    object_name: str,
+    field: sqlite3.Row,
+    *,
+    ordered_by: tuple[str, ...],
+    row_limit: int,
+    small_domain_limit: int,
+    include_values: bool,
+    profile_complete: bool,
+) -> ColumnProfile:
+    name = str(field["name"])
+    data_type = str(field["type"] or "BLOB")
+    if "BLOB" in data_type.upper():
+        return ColumnProfile(
+            name=name,
+            data_type=data_type,
+            status="omitted",
+            reason="unsupported_type",
+            non_null_count=None,
+            null_count=None,
+            distinct_count=None,
+            min_value=None,
+            max_value=None,
+            min_length=None,
+            max_length=None,
+        )
+    quoted = _quote(name)
+    inner = (
+        f"SELECT {quoted} AS value FROM {_quote(object_name)} "
+        f"ORDER BY {', '.join(_quote(item) for item in ordered_by)} LIMIT ?"
+    )
+    row = connection.execute(
+        "SELECT COUNT(value) AS non_null_count, "
+        "COUNT(1) - COUNT(value) AS null_count, "
+        "COUNT(DISTINCT value) AS distinct_count, "
+        "MIN(value) AS min_value, MAX(value) AS max_value, "
+        "MIN(LENGTH(CAST(value AS TEXT))) AS min_length, "
+        "MAX(LENGTH(CAST(value AS TEXT))) AS max_length "
+        f"FROM ({inner}) AS profile_rows",
+        (row_limit,),
+    ).fetchone()
+    distinct_count = int(row["distinct_count"])
+    values: tuple[ValueCount, ...] = ()
+    values_complete = False
+    if include_values and profile_complete and distinct_count <= small_domain_limit:
+        value_rows = connection.execute(
+            "SELECT value, COUNT(1) AS value_count "
+            f"FROM ({inner}) AS profile_rows WHERE value IS NOT NULL "
+            "GROUP BY value ORDER BY value_count DESC, CAST(value AS TEXT)",
+            (row_limit,),
+        ).fetchall()
+        values = tuple(
+            ValueCount(value=_profile_value(item["value"]), count=int(item["value_count"]))
+            for item in value_rows
+        )
+        values_complete = profile_complete
+    textual = any(token in data_type.upper() for token in ("CHAR", "CLOB", "TEXT"))
+    return ColumnProfile(
+        name=name,
+        data_type=data_type,
+        status="profiled",
+        reason=None,
+        non_null_count=int(row["non_null_count"]),
+        null_count=int(row["null_count"]),
+        distinct_count=distinct_count,
+        min_value=_profile_value(row["min_value"]),
+        max_value=_profile_value(row["max_value"]),
+        min_length=int(row["min_length"]) if textual and row["min_length"] is not None else None,
+        max_length=int(row["max_length"]) if textual and row["max_length"] is not None else None,
+        values=values,
+        values_complete=values_complete,
+    )
+
+
+def _profile_value(value: object) -> object:
+    if value is None or isinstance(value, bool | int | float | str):
+        return value
+    return str(value)
 
 
 def _profile_values(

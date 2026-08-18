@@ -20,7 +20,13 @@ class ConnectorTests(TestCase):
 
         self.assertEqual(
             manifest.capabilities,
-            ("probe", "discover_catalog", "sample_rows", "probe_relationships"),
+            (
+                "probe",
+                "discover_catalog",
+                "sample_rows",
+                "profile_object",
+                "probe_relationships",
+            ),
         )
         self.assertEqual(manifest.permissions, ("read",))
         self.assertEqual(manifest.dialect, "tsql")
@@ -36,7 +42,13 @@ class ConnectorTests(TestCase):
         self.assertEqual(payload["available"], expected_available)
         self.assertEqual(
             payload["capabilities"],
-            ["probe", "discover_catalog", "sample_rows", "probe_relationships"],
+            [
+                "probe",
+                "discover_catalog",
+                "sample_rows",
+                "profile_object",
+                "probe_relationships",
+            ],
         )
         self.assertEqual(payload["dialect"], "tsql")
         self.assertEqual(payload["permissions"], ["read"])
