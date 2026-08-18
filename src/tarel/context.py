@@ -532,6 +532,7 @@ def _context_join(edge: GraphEdge, node_by_id: dict[str, GraphNode]) -> ContextJ
         reason = None
         confidence = None
         kind = "foreign_key"
+        transformation = None
     else:
         from_fields = _field_names([edge.metadata.get("from_field")], edge.id)
         to_fields = _field_names([edge.metadata.get("to_field")], edge.id)
@@ -550,7 +551,18 @@ def _context_join(edge: GraphEdge, node_by_id: dict[str, GraphNode]) -> ContextJ
             if isinstance(confidence_value, (int, float)) and not isinstance(confidence_value, bool)
             else None
         )
-        kind = "validated_candidate"
+        transformation_value = edge.metadata.get("transformation")
+        if transformation_value is not None and not isinstance(transformation_value, dict):
+            raise ContextFailure(
+                "invalid_relationship",
+                f"Relationship transformation is invalid: {edge.id}",
+            )
+        transformation = transformation_value
+        kind = (
+            "validated_transformed_candidate"
+            if transformation is not None
+            else "validated_candidate"
+        )
     if len(from_fields) != len(to_fields):
         raise ContextFailure(
             "invalid_relationship",
@@ -569,6 +581,7 @@ def _context_join(edge: GraphEdge, node_by_id: dict[str, GraphNode]) -> ContextJ
         origin=origin,
         reason=reason,
         confidence=confidence,
+        transformation=transformation,
     )
 
 

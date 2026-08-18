@@ -86,6 +86,8 @@ class SourceTests(TestCase):
                             "state:demos/retail.toml",
                             "--namespace",
                             "main",
+                            "--allow-aggregates",
+                            "--allow-raw-samples",
                             "--format",
                             "json",
                         ]
@@ -104,6 +106,7 @@ class SourceTests(TestCase):
         self.assertEqual(build_exit, 0)
         self.assertEqual(json.loads(output.getvalue())["name"], "retail")
         self.assertEqual(source.graphs, ("retail-graph",))
+        self.assertEqual(source.enrichment_permissions, ("aggregates", "raw_samples"))
         self.assertEqual(graph.dialect, "sqlite")
 
     def test_config_references_are_strict_and_missing_env_fails_visibly(self) -> None:
@@ -214,3 +217,39 @@ class SourceTests(TestCase):
             SourceProfile.from_dict(payload)
 
         self.assertEqual(raised.exception.code, "invalid_source")
+
+    def test_enrichment_policy_is_explicit_revisioned_and_dependency_checked(self) -> None:
+        baseline = create_source("warehouse", connector="sqlserver")
+        legacy_payload = baseline.to_dict()
+        legacy_payload.pop("enrichment_permissions")
+        enriched = create_source(
+            "warehouse",
+            connector="sqlserver",
+            enrichment_permissions=("raw_samples", "aggregates", "small_domains"),
+        )
+
+        self.assertFalse(baseline.allows_enrichment("aggregates"))
+        self.assertEqual(SourceProfile.from_dict(legacy_payload), baseline)
+        self.assertTrue(enriched.allows_enrichment("aggregates"))
+        self.assertTrue(enriched.allows_enrichment("small_domains"))
+        self.assertTrue(enriched.allows_enrichment("raw_samples"))
+        self.assertNotEqual(baseline.revision, enriched.revision)
+        self.assertEqual(
+            enriched.to_dict()["enrichment_permissions"],
+            ["aggregates", "raw_samples", "small_domains"],
+        )
+        with self.assertRaises(SourceFailure) as missing_aggregate:
+            create_source(
+                "invalid",
+                connector="sqlserver",
+                enrichment_permissions=("small_domains",),
+            )
+        with self.assertRaises(SourceFailure) as unknown:
+            create_source(
+                "invalid",
+                connector="sqlserver",
+                enrichment_permissions=("unbounded_rows",),
+            )
+
+        self.assertEqual(missing_aggregate.exception.code, "invalid_enrichment_policy")
+        self.assertEqual(unknown.exception.code, "invalid_enrichment_permission")

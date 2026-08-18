@@ -160,11 +160,15 @@ tarel demo create retail-dwh
 tarel source configure retail-local \
   --connector sqlite \
   --config-ref state:demos/retail-dwh.toml \
-  --namespace main
+  --namespace main \
+  --allow-aggregates \
+  --allow-small-domains \
+  --allow-raw-samples
 
 tarel source check retail-local
 tarel source probe retail-local
 tarel source build retail-local retail-demo
+tarel source enrich retail-local retail-demo --format json
 
 # Dependency-free semantic retrieval and bounded agent context.
 tarel search retail-demo \
@@ -176,6 +180,12 @@ tarel grounding retail-demo \
   --source retail-local \
   --mode bm25
 ```
+
+Source enrichment is deny-by-default. Profiles, complete small-domain values, and bounded raw
+samples require the corresponding source grants. Raw rows appear only in the current command
+result and are never copied into the graph, retrieval index, context packet, or browser payload.
+Transformed join drafts are deliberately rare: a repeated key pattern must also carry a segment
+prefix that matches a target token or acronym, and TAREL keeps at most one candidate per segment.
 
 Inspect the graph locally:
 
@@ -280,8 +290,8 @@ activates the package explicitly.
 
 | Command | Purpose |
 |---|---|
-| `tarel source` | Manage logical sources; probe, discover, build, and refresh |
-| `tarel connector` | Inspect, sample, and scaffold read-only adapters |
+| `tarel source` | Manage logical sources; probe, discover, build, refresh, and enrich by policy |
+| `tarel connector` | Inspect, profile, sample, and scaffold read-only adapters |
 | `tarel graph` | Build, refresh, inspect, and batch-annotate graphs |
 | `tarel annotation` | Plan, apply, edit, and review semantic proposals |
 | `tarel knowledge` | Attach bounded Markdown/TXT context to annotation scopes |

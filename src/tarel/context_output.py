@@ -144,9 +144,10 @@ class ContextJoin:
     origin: str
     reason: str | None
     confidence: float | None
+    transformation: dict[str, object] | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "confidence": self.confidence,
             "from_fields": list(self.from_fields),
             "from_object": self.from_object,
@@ -160,6 +161,9 @@ class ContextJoin:
             "to_object": self.to_object,
             "to_object_id": self.to_object_id,
         }
+        if self.transformation is not None:
+            payload["transformation"] = self.transformation
+        return payload
 
 
 @dataclass(frozen=True, slots=True)

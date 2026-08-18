@@ -120,10 +120,12 @@ from tarel.search import SearchResults
 from tarel.sources.application import (
     SourceChangeResult,
     SourceCheck,
+    SourceEnrichmentResult,
     build_source_graph_use_case,
     check_source_use_case,
     configure_source_use_case,
     discover_source_use_case,
+    enrich_source_use_case,
     list_sources_use_case,
     load_source_use_case,
     probe_source_use_case,
@@ -242,6 +244,7 @@ class SourceAPI(_RuntimeAPI):
         database: str | None = None,
         namespace: str | None = None,
         graphs: tuple[str, ...] = (),
+        enrichment_permissions: tuple[str, ...] = (),
         replace: bool = False,
     ) -> SourceChangeResult:
         return configure_source_use_case(
@@ -251,6 +254,7 @@ class SourceAPI(_RuntimeAPI):
             database=database,
             namespace=namespace,
             graphs=graphs,
+            enrichment_permissions=enrichment_permissions,
             replace=replace,
             runtime=self._runtime,
         )
@@ -312,6 +316,24 @@ class SourceAPI(_RuntimeAPI):
             name,
             graph,
             namespace=namespace,
+            runtime=self._runtime,
+        )
+
+    def enrich(
+        self,
+        name: str,
+        graph: str,
+        *,
+        profile_row_limit: int = 10_000,
+        sample_limit: int = 10,
+        persist_join_candidates: bool = False,
+    ) -> SourceEnrichmentResult:
+        return enrich_source_use_case(
+            name,
+            graph,
+            profile_row_limit=profile_row_limit,
+            sample_limit=sample_limit,
+            persist_join_candidates=persist_join_candidates,
             runtime=self._runtime,
         )
 
@@ -1286,6 +1308,8 @@ class AnnotationAPI(_RuntimeAPI):
         limit: int | None = None,
         missing_only: bool = True,
         sample_limit: int = 0,
+        profile_row_limit: int = 0,
+        include_small_domain_values: bool = False,
         config: str | Path | None = None,
         knowledge: str = "none",
         knowledge_documents: tuple[str, ...] = (),
@@ -1299,6 +1323,8 @@ class AnnotationAPI(_RuntimeAPI):
             limit=limit,
             missing_only=missing_only,
             sample_limit=sample_limit,
+            profile_row_limit=profile_row_limit,
+            include_small_domain_values=include_small_domain_values,
             config_path=_optional_path(config),
             knowledge_mode=knowledge,
             knowledge_document_ids=knowledge_documents,
@@ -1316,6 +1342,8 @@ class AnnotationAPI(_RuntimeAPI):
         limit: int | None = None,
         missing_only: bool = True,
         sample_limit: int = 0,
+        profile_row_limit: int = 0,
+        include_small_domain_values: bool = False,
         config: str | Path | None = None,
         knowledge: str = "none",
         knowledge_documents: tuple[str, ...] = (),
@@ -1329,6 +1357,8 @@ class AnnotationAPI(_RuntimeAPI):
             limit=limit,
             missing_only=missing_only,
             sample_limit=sample_limit,
+            profile_row_limit=profile_row_limit,
+            include_small_domain_values=include_small_domain_values,
             config_path=_optional_path(config),
             knowledge_mode=knowledge,
             knowledge_document_ids=knowledge_documents,
@@ -1421,6 +1451,8 @@ class AnnotationAPI(_RuntimeAPI):
         model: str | None = None,
         timeout: float = 120.0,
         sample_limit: int = 0,
+        profile_row_limit: int = 0,
+        include_small_domain_values: bool = False,
         config: str | Path | None = None,
         knowledge: str = "none",
         knowledge_documents: tuple[str, ...] = (),
@@ -1443,6 +1475,8 @@ class AnnotationAPI(_RuntimeAPI):
             model=model,
             timeout=timeout,
             sample_limit=sample_limit,
+            profile_row_limit=profile_row_limit,
+            include_small_domain_values=include_small_domain_values,
             config_path=_optional_path(config),
             knowledge_mode=knowledge,
             knowledge_document_ids=knowledge_documents,

@@ -11,7 +11,10 @@ tarel demo create retail-dwh
 tarel source configure retail-local \
   --connector sqlite \
   --config-ref state:demos/retail-dwh.toml \
-  --namespace main
+  --namespace main \
+  --allow-aggregates \
+  --allow-small-domains \
+  --allow-raw-samples
 tarel source check retail-local
 tarel source probe retail-local
 tarel source discover retail-local
@@ -20,8 +23,68 @@ tarel connector sample sqlite \
   --schema main \
   --object F_SLS_01 \
   --limit 3
+
+# Aggregate profiles do not include small-domain values by default.
+tarel connector profile sqlite \
+  --config .tarel/demos/retail-dwh.toml \
+  --schema main \
+  --object D_CHNL \
+  --row-limit 10000
+
+# Explicitly allow observed values for complete small domains in this command result.
+tarel connector profile sqlite \
+  --config .tarel/demos/retail-dwh.toml \
+  --schema main \
+  --object D_CHNL \
+  --row-limit 10000 \
+  --include-values
+
 tarel source build retail-local retail-demo
+tarel source enrich retail-local retail-demo --format json
 ```
+
+Profiles report bounded row coverage, null and distinct counts, min/max values, and text lengths.
+Unsupported columns remain visible as omissions. Profile output and raw table previews are ephemeral:
+TAREL does not copy them into the graph, retrieval index, or context packets. The separate
+`connector sample` command remains an explicit, read-permission-controlled preview and accepts at
+most ten rows.
+
+The source permissions are deny-by-default and independent for each logical source:
+
+- `aggregates` permits bounded column profiles with null/distinct counts, min/max, and lengths;
+- `small_domains` additionally permits complete value counts for small domains and therefore
+  requires `aggregates`;
+- `raw_samples` permits at most ten raw rows per table in the command result.
+
+`source enrich` walks every table and view in the bound graph. Its JSON result is an ephemeral
+workfile containing the allowed profiles and, only with `raw_samples` permission, up to ten rows
+per object. Raw rows are never copied into the graph, retrieval index, context packet, or browser
+payload. Individual object failures remain visible in the workfile while other objects continue.
+
+When sampled strings repeat a fixed pattern such as `KST102020KTO102000`, the workfile reports its
+coverage and fixed digit segments. The first conservative thresholds require at least three
+matching keys, 80% pattern coverage, two overlapping distinct values, 60% sampled source coverage,
+and 90% sampled target uniqueness. These numeric thresholds are necessary but not sufficient:
+
+- the source must be a textual key-like field or a clear multi-prefix composite key;
+- temporal and ordinary free-text shapes are excluded;
+- the literal cue immediately before a digit segment must match a token or acronym in the target
+  object or field name;
+- at most one ranked target survives for each source segment.
+
+Use `--persist-join-candidates` to write only aggregated overlap metrics and the zero-based segment
+transform into draft relationship candidates:
+
+```bash
+tarel source enrich retail-local retail-demo \
+  --persist-join-candidates \
+  --format json
+tarel relationship list retail-demo
+```
+
+Zero candidates is a normal successful outcome: pattern hints stay in the ephemeral workfile when
+the semantic target cue is insufficient. Persisted candidates are not usable by context expansion
+until a human validates them. No raw key or sample value is persisted with the candidate.
 
 The graph contains date, product, customer, geography, reseller, currency, and channel dimensions;
 two sales facts; one return fact; a bridge-like mapping table; and a union view. `F_SLS_01` and
@@ -34,12 +97,17 @@ provider, then review the resulting drafts:
 ```bash
 tarel annotation next retail-demo \
   --samples 5 \
+  --profile-rows 10000 \
   --config .tarel/demos/retail-dwh.toml
 tarel annotation apply retail-demo --input proposal.json
 tarel annotation validate retail-demo main.F_SLS_01 \
   --include-fields \
   --reason "Reviewed against the demo schema and bounded samples."
 ```
+
+Profiles include bounded min/max observations. Add `--include-small-domain-values` only when the
+coding-agent task may additionally receive complete small-domain values. TAREL treats every
+observed value as protected annotation input and rejects a provider response that repeats it.
 
 Probe and persist the intentionally missing relationship candidate:
 
