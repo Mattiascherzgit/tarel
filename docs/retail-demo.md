@@ -57,15 +57,23 @@ The source permissions are deny-by-default and independent for each logical sour
 - `raw_samples` permits at most ten raw rows per table in the command result.
 
 `source enrich` walks every table and view in the bound graph. Its JSON result is an ephemeral
-workfile containing the allowed profiles and Top 10 samples. Raw rows are never copied into the
-graph, retrieval index, or context packet. Individual object failures remain visible in the
-workfile while other objects continue.
+workfile containing the allowed profiles and, only with `raw_samples` permission, up to ten rows
+per object. Raw rows are never copied into the graph, retrieval index, context packet, or browser
+payload. Individual object failures remain visible in the workfile while other objects continue.
 
 When sampled strings repeat a fixed pattern such as `KST102020KTO102000`, the workfile reports its
 coverage and fixed digit segments. The first conservative thresholds require at least three
 matching keys, 80% pattern coverage, two overlapping distinct values, 60% sampled source coverage,
-and 90% sampled target uniqueness. Use `--persist-join-candidates` to write only aggregated overlap
-metrics and the zero-based segment transform into draft relationship candidates:
+and 90% sampled target uniqueness. These numeric thresholds are necessary but not sufficient:
+
+- the source must be a textual key-like field or a clear multi-prefix composite key;
+- temporal and ordinary free-text shapes are excluded;
+- the literal cue immediately before a digit segment must match a token or acronym in the target
+  object or field name;
+- at most one ranked target survives for each source segment.
+
+Use `--persist-join-candidates` to write only aggregated overlap metrics and the zero-based segment
+transform into draft relationship candidates:
 
 ```bash
 tarel source enrich retail-local retail-demo \
@@ -74,8 +82,9 @@ tarel source enrich retail-local retail-demo \
 tarel relationship list retail-demo
 ```
 
-These candidates are not usable by context expansion until a human validates them. No raw key or
-sample value is persisted with the candidate.
+Zero candidates is a normal successful outcome: pattern hints stay in the ephemeral workfile when
+the semantic target cue is insufficient. Persisted candidates are not usable by context expansion
+until a human validates them. No raw key or sample value is persisted with the candidate.
 
 The graph contains date, product, customer, geography, reseller, currency, and channel dimensions;
 two sales facts; one return fact; a bridge-like mapping table; and a union view. `F_SLS_01` and

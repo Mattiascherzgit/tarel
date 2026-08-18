@@ -67,6 +67,10 @@ grants `aggregates`, `small_domains`, and/or `raw_samples`; an omitted grant den
 The batch compiler profiles every object in a bound graph and returns an ephemeral workfile. Raw
 samples remain process output. Repeated composite-key patterns may produce aggregate-only draft
 join candidates, but writing those candidates is explicit and never makes them reviewed truth.
+Pattern inference is intentionally conservative: it considers textual key-like fields or clear
+multi-prefix composite keys, rejects temporal and ordinary free-text shapes, requires the literal
+segment cue to match the target object or field, and keeps at most one target per source segment.
+It is therefore normal for enrichment to report useful patterns while persisting no join drafts.
 
 ## Lineage path
 

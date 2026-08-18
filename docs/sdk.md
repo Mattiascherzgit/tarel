@@ -55,7 +55,11 @@ allows bounded profiles, `small_domains` adds complete values for small domains,
 allows at most ten rows per graph object in the returned `SourceEnrichmentResult`. The result is an
 ephemeral workfile; TAREL does not persist its profiles or rows. Passing
 `persist_join_candidates=True` may persist only aggregate evidence for transformed draft joins and
-requires `raw_samples` permission.
+requires `raw_samples` permission. Candidate generation is deliberately precision-first: temporal
+and ordinary free-text patterns are excluded, each digit segment needs a literal cue that matches
+the target object or field, and only the strongest target per source segment survives. A successful
+enrichment may consequently return patterns but zero candidates. Drafts remain unusable by context
+expansion until a human validates them.
 
 ## Ground a BI-agent turn
 

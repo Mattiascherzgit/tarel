@@ -181,6 +181,12 @@ tarel grounding retail-demo \
   --mode bm25
 ```
 
+Source enrichment is deny-by-default. Profiles, complete small-domain values, and bounded raw
+samples require the corresponding source grants. Raw rows appear only in the current command
+result and are never copied into the graph, retrieval index, context packet, or browser payload.
+Transformed join drafts are deliberately rare: a repeated key pattern must also carry a segment
+prefix that matches a target token or acronym, and TAREL keeps at most one candidate per segment.
+
 Inspect the graph locally:
 
 ```bash
