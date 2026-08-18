@@ -162,6 +162,8 @@ SELECT
     columns.name AS field_name,
     types.name AS type_name,
     columns.max_length,
+    columns.precision,
+    columns.scale,
     columns.column_id,
     CASE WHEN EXISTS (
         SELECT 1

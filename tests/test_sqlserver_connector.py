@@ -118,6 +118,11 @@ class SqlServerConnectorTests(TestCase):
         self.assertTrue(status.values_complete)
         self.assertTrue(any("TOP (11)" in query for query in cursor.queries))
         self.assertTrue(all("ORDER BY [RecordId]" in query for query in cursor.queries[1:]))
+        field_query = next(
+            query for query in cursor.queries if "columns.name AS field_name" in query
+        )
+        self.assertIn("columns.precision", field_query)
+        self.assertIn("columns.scale", field_query)
 
     def test_incomplete_profile_never_emits_a_partial_domain(self) -> None:
         cursor = _ProfileCursor(observed_rows=4)
