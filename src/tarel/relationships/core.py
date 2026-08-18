@@ -26,6 +26,50 @@ class ResolvedField:
         return f"{self.object_node.label}.{self.field_node.label}"
 
 
+@dataclass(frozen=True, slots=True)
+class TransformedRelationshipProfile:
+    pair: RelationshipPair
+    pattern: str
+    component_index: int
+    component_start: int
+    component_length: int
+    pattern_sample_count: int
+    pattern_match_count: int
+    pattern_coverage: float
+    source_distinct_count: int
+    target_non_null_count: int
+    target_distinct_count: int
+    overlap_count: int
+    sample_row_limit: int
+
+    @property
+    def source_coverage(self) -> float:
+        return self.overlap_count / max(1, self.source_distinct_count)
+
+    @property
+    def target_uniqueness(self) -> float:
+        return self.target_distinct_count / max(1, self.target_non_null_count)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "component_index": self.component_index,
+            "component_length": self.component_length,
+            "component_start": self.component_start,
+            "overlap_count": self.overlap_count,
+            "pair": self.pair.to_dict(),
+            "pattern": self.pattern,
+            "pattern_coverage": round(self.pattern_coverage, 6),
+            "pattern_match_count": self.pattern_match_count,
+            "pattern_sample_count": self.pattern_sample_count,
+            "sample_row_limit": self.sample_row_limit,
+            "source_coverage": round(self.source_coverage, 6),
+            "source_distinct_count": self.source_distinct_count,
+            "target_distinct_count": self.target_distinct_count,
+            "target_non_null_count": self.target_non_null_count,
+            "target_uniqueness": round(self.target_uniqueness, 6),
+        }
+
+
 def relationship_pair(
     graph: GraphDocument,
     from_reference: str,
@@ -212,6 +256,73 @@ def add_profile_candidates(
             state="draft",
             reason="Bounded value-domain overlap suggests a possible join.",
             profile=profile,
+        )
+        current = replace(current, edges=(*current.edges, edge))
+        edges.append(edge)
+    return current, tuple(edges)
+
+
+def add_transformed_profile_candidates(
+    graph: GraphDocument,
+    profiles: tuple[TransformedRelationshipProfile, ...],
+) -> tuple[GraphDocument, tuple[GraphEdge, ...]]:
+    current = graph
+    edges: list[GraphEdge] = []
+    for profile in sorted(
+        profiles,
+        key=lambda item: (
+            item.pair.from_namespace,
+            item.pair.from_object,
+            item.pair.from_field,
+            item.component_index,
+            item.pair.to_namespace,
+            item.pair.to_object,
+            item.pair.to_field,
+        ),
+    ):
+        if _pair_exists(current, profile.pair):
+            continue
+        source = resolve_field(current, _from_reference(profile.pair))
+        target = resolve_field(current, _to_reference(profile.pair))
+        digest = hashlib.sha256(
+            (
+                f"{source.field_node.id}\n{target.field_node.id}\n{profile.pattern}\n"
+                f"{profile.component_index}"
+            ).encode()
+        ).hexdigest()[:20]
+        confidence = 0.15 + (0.25 * profile.pattern_coverage)
+        confidence += 0.3 * profile.source_coverage
+        confidence += 0.2 * profile.target_uniqueness
+        confidence += min(0.1, profile.overlap_count / 100)
+        edge = GraphEdge(
+            id=f"relationship_candidate:{digest}",
+            source_id=source.object_node.id,
+            target_id=target.object_node.id,
+            type="relationship_candidate",
+            metadata={
+                **profile.pair.to_dict(),
+                "candidate_kind": "transformed_join_candidate",
+                "confidence": round(min(0.95, confidence), 4),
+                "origin": "key_pattern_sample",
+                "overlap_count": profile.overlap_count,
+                "pattern_coverage": round(profile.pattern_coverage, 6),
+                "pattern_match_count": profile.pattern_match_count,
+                "pattern_sample_count": profile.pattern_sample_count,
+                "reason": "A repeated key segment overlaps a sampled target key domain.",
+                "sample_row_limit": profile.sample_row_limit,
+                "source_coverage": round(profile.source_coverage, 6),
+                "state": "draft",
+                "target_distinct_count": profile.target_distinct_count,
+                "target_non_null_count": profile.target_non_null_count,
+                "target_uniqueness": round(profile.target_uniqueness, 6),
+                "transformation": {
+                    "component_index": profile.component_index,
+                    "kind": "fixed_segment",
+                    "length": profile.component_length,
+                    "pattern": profile.pattern,
+                    "start": profile.component_start,
+                },
+            },
         )
         current = replace(current, edges=(*current.edges, edge))
         edges.append(edge)

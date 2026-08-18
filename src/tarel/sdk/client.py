@@ -120,10 +120,12 @@ from tarel.search import SearchResults
 from tarel.sources.application import (
     SourceChangeResult,
     SourceCheck,
+    SourceEnrichmentResult,
     build_source_graph_use_case,
     check_source_use_case,
     configure_source_use_case,
     discover_source_use_case,
+    enrich_source_use_case,
     list_sources_use_case,
     load_source_use_case,
     probe_source_use_case,
@@ -242,6 +244,7 @@ class SourceAPI(_RuntimeAPI):
         database: str | None = None,
         namespace: str | None = None,
         graphs: tuple[str, ...] = (),
+        enrichment_permissions: tuple[str, ...] = (),
         replace: bool = False,
     ) -> SourceChangeResult:
         return configure_source_use_case(
@@ -251,6 +254,7 @@ class SourceAPI(_RuntimeAPI):
             database=database,
             namespace=namespace,
             graphs=graphs,
+            enrichment_permissions=enrichment_permissions,
             replace=replace,
             runtime=self._runtime,
         )
@@ -312,6 +316,24 @@ class SourceAPI(_RuntimeAPI):
             name,
             graph,
             namespace=namespace,
+            runtime=self._runtime,
+        )
+
+    def enrich(
+        self,
+        name: str,
+        graph: str,
+        *,
+        profile_row_limit: int = 10_000,
+        sample_limit: int = 10,
+        persist_join_candidates: bool = False,
+    ) -> SourceEnrichmentResult:
+        return enrich_source_use_case(
+            name,
+            graph,
+            profile_row_limit=profile_row_limit,
+            sample_limit=sample_limit,
+            persist_join_candidates=persist_join_candidates,
             runtime=self._runtime,
         )
 

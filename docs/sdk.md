@@ -30,12 +30,14 @@ source = tarel.source.configure(
     config_reference="env:TAREL_WAREHOUSE_CONFIG",
     database="EnterpriseDW",
     namespace="mart",
+    enrichment_permissions=("aggregates", "small_domains", "raw_samples"),
 )
 
 status = tarel.source.check("warehouse-prod")
 probe = tarel.source.probe("warehouse-prod")
 catalog = tarel.source.discover("warehouse-prod")
 graph = tarel.source.build_graph("warehouse-prod", "warehouse")
+enrichment = tarel.source.enrich("warehouse-prod", "warehouse")
 ```
 
 An `env:` reference resolves to a private TOML file path provided by the embedding process. A
@@ -47,6 +49,13 @@ The persisted `SourceProfile` contains no resolved URL or credential and is alwa
 `build_graph` records the graph association; `refresh_graph` reuses the same source boundary.
 Installed private adapters are discovered through the `tarel.connectors` Python entry-point group,
 while the core retains no dependency on their drivers.
+
+Enrichment permissions are deny-by-default and become part of the source revision. `aggregates`
+allows bounded profiles, `small_domains` adds complete values for small domains, and `raw_samples`
+allows at most ten rows per graph object in the returned `SourceEnrichmentResult`. The result is an
+ephemeral workfile; TAREL does not persist its profiles or rows. Passing
+`persist_join_candidates=True` may persist only aggregate evidence for transformed draft joins and
+requires `raw_samples` permission.
 
 ## Ground a BI-agent turn
 

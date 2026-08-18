@@ -11,7 +11,10 @@ tarel demo create retail-dwh
 tarel source configure retail-local \
   --connector sqlite \
   --config-ref state:demos/retail-dwh.toml \
-  --namespace main
+  --namespace main \
+  --allow-aggregates \
+  --allow-small-domains \
+  --allow-raw-samples
 tarel source check retail-local
 tarel source probe retail-local
 tarel source discover retail-local
@@ -37,6 +40,7 @@ tarel connector profile sqlite \
   --include-values
 
 tarel source build retail-local retail-demo
+tarel source enrich retail-local retail-demo --format json
 ```
 
 Profiles report bounded row coverage, null and distinct counts, min/max values, and text lengths.
@@ -44,6 +48,34 @@ Unsupported columns remain visible as omissions. Profile output and raw table pr
 TAREL does not copy them into the graph, retrieval index, or context packets. The separate
 `connector sample` command remains an explicit, read-permission-controlled preview and accepts at
 most ten rows.
+
+The source permissions are deny-by-default and independent for each logical source:
+
+- `aggregates` permits bounded column profiles with null/distinct counts, min/max, and lengths;
+- `small_domains` additionally permits complete value counts for small domains and therefore
+  requires `aggregates`;
+- `raw_samples` permits at most ten raw rows per table in the command result.
+
+`source enrich` walks every table and view in the bound graph. Its JSON result is an ephemeral
+workfile containing the allowed profiles and Top 10 samples. Raw rows are never copied into the
+graph, retrieval index, or context packet. Individual object failures remain visible in the
+workfile while other objects continue.
+
+When sampled strings repeat a fixed pattern such as `KST102020KTO102000`, the workfile reports its
+coverage and fixed digit segments. The first conservative thresholds require at least three
+matching keys, 80% pattern coverage, two overlapping distinct values, 60% sampled source coverage,
+and 90% sampled target uniqueness. Use `--persist-join-candidates` to write only aggregated overlap
+metrics and the zero-based segment transform into draft relationship candidates:
+
+```bash
+tarel source enrich retail-local retail-demo \
+  --persist-join-candidates \
+  --format json
+tarel relationship list retail-demo
+```
+
+These candidates are not usable by context expansion until a human validates them. No raw key or
+sample value is persisted with the candidate.
 
 The graph contains date, product, customer, geography, reseller, currency, and channel dimensions;
 two sales facts; one return fact; a bridge-like mapping table; and a union view. `F_SLS_01` and

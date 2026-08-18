@@ -105,10 +105,12 @@ from tarel.retrieval.local import DEFAULT_MODEL_NAME
 from tarel.search import SearchFailure, SearchResults
 from tarel.sources.application import (
     SourceCheck,
+    SourceEnrichmentResult,
     build_source_graph_use_case,
     check_source_use_case,
     configure_source_use_case,
     discover_source_use_case,
+    enrich_source_use_case,
     list_sources_use_case,
     load_source_use_case,
     probe_source_use_case,
@@ -317,6 +319,21 @@ def build_parser() -> argparse.ArgumentParser:
     source_configure.add_argument("--database")
     source_configure.add_argument("--namespace", "--schema", dest="namespace")
     source_configure.add_argument("--graph", action="append", dest="graphs")
+    source_configure.add_argument(
+        "--allow-aggregates",
+        action="store_true",
+        help="Permit bounded aggregate column profiles for this source.",
+    )
+    source_configure.add_argument(
+        "--allow-small-domains",
+        action="store_true",
+        help="Permit complete small-domain counts; requires aggregate permission.",
+    )
+    source_configure.add_argument(
+        "--allow-raw-samples",
+        action="store_true",
+        help="Permit ephemeral raw samples of at most ten rows per object.",
+    )
     source_configure.add_argument("--replace", action="store_true")
     _add_format_argument(source_configure)
 
@@ -369,6 +386,26 @@ def build_parser() -> argparse.ArgumentParser:
     source_refresh.add_argument("graph_name")
     source_refresh.add_argument("--namespace", "--schema", dest="namespace")
     _add_format_argument(source_refresh)
+
+    source_enrich = source_commands.add_parser(
+        "enrich",
+        help="Profile every graph object under the source enrichment policy.",
+    )
+    source_enrich.add_argument("name")
+    source_enrich.add_argument("graph_name")
+    source_enrich.add_argument("--profile-row-limit", type=int, default=10_000)
+    source_enrich.add_argument(
+        "--sample-limit",
+        type=int,
+        default=10,
+        help="Raw rows per object when allowed; maximum 10 (default: 10).",
+    )
+    source_enrich.add_argument(
+        "--persist-join-candidates",
+        action="store_true",
+        help="Persist aggregate transformed-join evidence, never sample rows.",
+    )
+    _add_format_argument(source_enrich)
 
     connector = subcommands.add_parser("connector", help="Inspect and run source connectors.")
     connector_commands = connector.add_subparsers(dest="connector_command")
@@ -1113,6 +1150,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 database=args.database,
                 namespace=args.namespace,
                 graphs=tuple(args.graphs or ()),
+                enrichment_permissions=tuple(
+                    permission
+                    for permission, allowed in (
+                        ("aggregates", args.allow_aggregates),
+                        ("small_domains", args.allow_small_domains),
+                        ("raw_samples", args.allow_raw_samples),
+                    )
+                    if allowed
+                ),
                 replace=args.replace,
             )
             _render_source(result.source, output_format=args.format)
@@ -1182,6 +1228,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _render_graph_summary(result.graph, output_format="text", path=result.path)
                 print(f"Changes: {len(result.report.changes)}")
             return 0
+
+        if args.command == "source" and args.source_command == "enrich":
+            result = enrich_source_use_case(
+                args.name,
+                args.graph_name,
+                profile_row_limit=args.profile_row_limit,
+                sample_limit=args.sample_limit,
+                persist_join_candidates=args.persist_join_candidates,
+            )
+            _render_source_enrichment(result, output_format=args.format)
+            if result.workfile.samples_present:
+                print(
+                    "note: raw sample rows were emitted only in this output "
+                    "and were not persisted.",
+                    file=sys.stderr,
+                )
+            return 0 if result.workfile.complete else 1
 
         if args.command == "workspace" and args.workspace_command == "create":
             result = create_workspace_use_case(args.name, description=args.description)
@@ -2575,8 +2638,67 @@ def _render_source(source: SourceProfile, *, output_format: str) -> None:
     print(f"Database: {source.database or 'connector default'}")
     print(f"Namespace: {source.namespace or 'all'}")
     print(f"Graphs: {', '.join(source.graphs) or 'none'}")
+    print(
+        "Enrichment permissions: "
+        f"{', '.join(source.enrichment_permissions) or 'none'}"
+    )
     print("Read only: yes")
     print(f"Revision: {source.revision}")
+
+
+def _render_source_enrichment(
+    result: SourceEnrichmentResult,
+    *,
+    output_format: str,
+) -> None:
+    if output_format == "json":
+        print(json.dumps(result.to_dict(), indent=2, ensure_ascii=False, sort_keys=True))
+        return
+    workfile = result.workfile
+    print(f"Source: {workfile.source}")
+    print(f"Graph: {workfile.graph}")
+    print(f"Permissions: {', '.join(workfile.permissions)}")
+    print(f"Objects: {len(workfile.objects)}")
+    print(f"Complete: {'yes' if workfile.complete else 'no'}")
+    for item in workfile.objects:
+        print(f"- {item.label}")
+        if item.profile is not None:
+            print(
+                f"  profile: {item.profile.rows_profiled} rows, "
+                f"{len(item.profile.columns)} columns"
+            )
+            for column in item.profile.columns:
+                if column.status != "profiled":
+                    print(
+                        f"    {column.name}: omitted "
+                        f"({column.reason or 'unsupported'})"
+                    )
+                    continue
+                print(
+                    f"    {column.name}: distinct={column.distinct_count}, "
+                    f"min={column.min_value!r}, max={column.max_value!r}"
+                )
+                if column.values:
+                    values = ", ".join(
+                        f"{value.value!r} ({value.count})" for value in column.values
+                    )
+                    print(f"      values: {values}")
+        if item.sample is not None:
+            print(f"  sample: {len(item.sample.rows)} rows")
+            for row in item.sample.rows:
+                print(f"    {json.dumps(row, ensure_ascii=False, sort_keys=True)}")
+        for pattern in item.key_patterns:
+            print(
+                f"  pattern: {pattern.field} = {pattern.pattern} "
+                f"(coverage {pattern.coverage:.1%})"
+            )
+        for failure in item.failures:
+            print(f"  failure [{failure.operation}/{failure.code}]: {failure.message}")
+    print(
+        "Transformed join candidates: "
+        f"{len(workfile.transformed_join_candidates)}"
+    )
+    print(f"Persisted candidates: {len(result.persisted_candidates)}")
 
 
 def _render_source_check(result: SourceCheck, *, output_format: str) -> None:

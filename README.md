@@ -160,11 +160,15 @@ tarel demo create retail-dwh
 tarel source configure retail-local \
   --connector sqlite \
   --config-ref state:demos/retail-dwh.toml \
-  --namespace main
+  --namespace main \
+  --allow-aggregates \
+  --allow-small-domains \
+  --allow-raw-samples
 
 tarel source check retail-local
 tarel source probe retail-local
 tarel source build retail-local retail-demo
+tarel source enrich retail-local retail-demo --format json
 
 # Dependency-free semantic retrieval and bounded agent context.
 tarel search retail-demo \
@@ -280,7 +284,7 @@ activates the package explicitly.
 
 | Command | Purpose |
 |---|---|
-| `tarel source` | Manage logical sources; probe, discover, build, and refresh |
+| `tarel source` | Manage logical sources; probe, discover, build, refresh, and enrich by policy |
 | `tarel connector` | Inspect, profile, sample, and scaffold read-only adapters |
 | `tarel graph` | Build, refresh, inspect, and batch-annotate graphs |
 | `tarel annotation` | Plan, apply, edit, and review semantic proposals |

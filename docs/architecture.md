@@ -62,6 +62,12 @@ Technical observations and semantic claims remain separate. An annotation begins
 keeps its evidence, provider identity, confidence, and review state. The source remains
 authoritative; TAREL stores metadata and reviewable knowledge rather than a warehouse copy.
 
+Source enrichment is a separate, policy-gated observation path. Each logical source explicitly
+grants `aggregates`, `small_domains`, and/or `raw_samples`; an omitted grant denies that operation.
+The batch compiler profiles every object in a bound graph and returns an ephemeral workfile. Raw
+samples remain process output. Repeated composite-key patterns may produce aggregate-only draft
+join candidates, but writing those candidates is explicit and never makes them reviewed truth.
+
 ## Lineage path
 
 ```text
@@ -126,6 +132,9 @@ Writes are atomic. Documents use canonical ordering and SHA-256 identities and o
 runtime durations, and volatile paths from agent-facing contracts. The first SDK supports
 concurrent reads and one writer per document; coordinated multi-writer storage is intentionally an
 optional future adapter.
+
+Enrichment workfiles are intentionally absent from this tree. A caller may redirect one to a
+private location, but TAREL does not place raw samples in graphs, indexes, or context packets.
 
 ## Public surface
 
