@@ -42,6 +42,11 @@ async function load() {
   initializeScopeFilters();
   const params = new URLSearchParams(window.location.search);
   if (params.get("mode") === "lineage") state.canvasMode = "lineage";
+  const requestedObject = params.get("object");
+  const requestedMatch = requestedObject && state.data.objects.find(item =>
+    item.id === requestedObject || item.label === requestedObject || item.name === requestedObject
+  );
+  if (requestedMatch) state.selectedId = requestedMatch.id;
   if (!state.selectedId && state.data.objects.length) state.selectedId = defaultVisibleObject();
   if (!state.reviewId) state.reviewId = nextReview()?.id || null;
   renderAll();
@@ -433,15 +438,85 @@ function renderInspector() {
   if (!item) return;
   const annotation = item.annotation;
   const relationships = state.data.edges.filter(edge => edge.source === item.id || edge.target === item.id);
+  const fieldSemantics = item.fields.flatMap(field => (field.source_semantics || []).map(entry => ({...entry, field_label: field.label})));
+  const relationshipSemantics = relationships.flatMap(edge => edge.source_semantics || []);
   $("#inspector").innerHTML = `
     <div class="inspector-head"><p class="eyebrow">${escapeHtml(item.type)} · ${escapeHtml(item.namespace)}</p><h2>${escapeHtml(item.name)}</h2><p class="mono">${escapeHtml(item.label)}</p></div>
-    <section class="detail-section"><h3>Semantic description</h3><p class="description">${escapeHtml(annotation?.description || "No semantic proposal yet.")}</p></section>
+    ${semanticImportStrip()}
+    <section class="detail-section tarel-semantics"><h3>TAREL annotation</h3><p class="description">${escapeHtml(annotation?.description || "No TAREL annotation yet.")}</p><small class="semantic-origin">Editable in Review · stored on the TAREL graph</small></section>
     <section class="detail-section"><div class="fact-grid">
       ${fact("State", annotation?.state || "missing")}${fact("Role", annotation?.role || "—")}${fact("Grain", item.grain || "—")}${fact("Confidence", annotation?.confidence == null ? "—" : `${Math.round(annotation.confidence * 100)}%`)}
       ${fact("Primary key", item.primary_key.join(", ") || "—")}${fact("Relationships", String(relationships.length))}
     </div></section>
-    <section class="detail-section"><h3>Fields · ${item.fields.length}</h3><table class="fields-table"><thead><tr><th>Name</th><th>Type</th><th>Semantic</th></tr></thead><tbody>${item.fields.map(field => `<tr><td>${escapeHtml(field.label)}</td><td class="mono">${escapeHtml(field.data_type || "—")}</td><td>${field.semantic_type ? `<span class="semantic-pill">${escapeHtml(field.semantic_type)}</span>` : "—"}</td></tr>`).join("")}</tbody></table></section>
+    ${sourceSemanticCards(item.source_semantics || [], "Imported dataset semantics")}
+    <section class="detail-section"><h3>Fields · ${item.fields.length}</h3><table class="fields-table"><thead><tr><th>Name</th><th>Type</th><th>TAREL</th><th>Source</th></tr></thead><tbody>${item.fields.map(field => `<tr><td>${escapeHtml(field.label)}</td><td class="mono">${escapeHtml(field.data_type || "—")}</td><td>${field.semantic_type ? `<span class="semantic-pill">${escapeHtml(field.semantic_type)}</span>` : "—"}</td><td>${(field.source_semantics || []).map(entry => `<span class="source-pill" title="${escapeAttr(entry.import_name)}">${escapeHtml(entry.name)}</span>`).join(" ") || "—"}</td></tr>`).join("")}</tbody></table></section>
+    ${sourceSemanticCards(fieldSemantics, "Imported field semantics")}
+    ${sourceSemanticCards(relationshipSemantics, "Imported relationship semantics")}
+    ${sourceSemanticCards(semanticCatalogEntries(), "Model-wide & unbound source semantics")}
+    ${semanticImportDiagnostics()}
     ${annotation?.warnings?.length ? `<section class="detail-section"><h3>Warnings</h3><p class="description">${annotation.warnings.map(escapeHtml).join(" · ")}</p></section>` : ""}`;
+  $$(".source-semantic-form").forEach(form => form.addEventListener("submit", saveSourceSemantic));
+}
+
+function semanticImportStrip() {
+  const imports = state.data.semantic_imports || [];
+  if (!imports.length) return "";
+  return `<section class="semantic-import-strip"><div><strong>Source imports</strong><small>${imports.length} separate from TAREL annotations</small></div><div class="semantic-format-list">${imports.map(item => `<span class="semantic-format ${item.complete ? "complete" : "incomplete"}" title="${escapeAttr(`${item.name} · ${item.diagnostics} diagnostics`)}">${escapeHtml(item.format_name)}</span>`).join("")}</div></section>`;
+}
+
+function sourceSemanticCards(entries, title) {
+  if (!entries.length) return "";
+  return `<section class="detail-section source-semantics"><h3>${escapeHtml(title)} · ${entries.length}</h3><p class="semantic-origin">Imported values remain separate. Saving creates a TAREL overlay; the original source snapshot stays unchanged.</p>${entries.map(entry => `
+    <form class="source-semantic-card source-semantic-form" data-import-name="${escapeAttr(entry.import_name)}" data-target-id="${escapeAttr(entry.target_id)}" data-revision="${escapeAttr(entry.import_revision)}">
+      <header><span><strong>${escapeHtml(entry.display_label || entry.field_label || entry.name)}</strong><small>${escapeHtml(entry.import_name)} · ${escapeHtml(entry.kind)}</small></span><span class="source-state">${entry.patch_count ? `${entry.patch_count} edit${entry.patch_count === 1 ? "" : "s"}` : "source"}</span></header>
+      <label><span>Description</span><textarea name="description" ${state.data.editable ? "" : "disabled"}>${escapeHtml(entry.description || "")}</textarea></label>
+      <label><span>Synonyms · one per line</span><textarea class="short-textarea" name="synonyms" ${state.data.editable ? "" : "disabled"}>${escapeHtml((entry.synonyms || []).join("\n"))}</textarea></label>
+      <label><span>Edit reason</span><input name="reason" value="Reviewed in the local TAREL UI." required ${state.data.editable ? "" : "disabled"} /></label>
+      <div class="source-actions"><small class="mono">${escapeHtml(entry.source_reference)}</small><button class="quiet-button" type="submit" ${state.data.editable ? "" : "disabled"}>Save source overlay</button></div>
+      <details><summary>Original imported values</summary><p>${escapeHtml(entry.original?.description || "No description")}</p><small>${escapeHtml((entry.original?.synonyms || []).join(" · ") || "No synonyms")}</small></details>
+    </form>`).join("")}</section>`;
+}
+
+function semanticCatalogEntries() {
+  const entries = [];
+  for (const model of state.data.semantic_models || []) {
+    entries.push({...model, display_label: `Model · ${model.name}`});
+    for (const metric of model.metrics || []) entries.push({...metric, display_label: `Metric · ${metric.name}`});
+    for (const dataset of model.datasets || []) {
+      if (!dataset.graph_node_id) entries.push({...dataset, display_label: `Unbound dataset · ${dataset.name}`});
+      for (const field of dataset.fields || []) {
+        if (!field.graph_node_id) entries.push({...field, display_label: `Unbound field · ${dataset.name}.${field.name}`});
+      }
+    }
+    for (const relationship of model.relationships || []) {
+      if (!relationship.graph_edge_id) entries.push({...relationship, display_label: `Unbound relationship · ${relationship.name}`});
+    }
+  }
+  return entries;
+}
+
+function semanticImportDiagnostics() {
+  const imports = state.data.semantic_imports || [];
+  if (!imports.length) return "";
+  return `<section class="detail-section source-diagnostics"><h3>Semantic imports · ${imports.length}</h3>${imports.map(item => `<details ${item.complete ? "" : "open"}><summary><strong>${escapeHtml(item.name)}</strong><span class="source-state">${item.complete ? "complete" : "incomplete"} · ${item.diagnostics} diagnostics</span></summary><div>${(item.diagnostic_items || []).map(diagnostic => `<p><strong>${escapeHtml(diagnostic.level)} · ${escapeHtml(diagnostic.code)}</strong><br>${escapeHtml(diagnostic.message)}<br><small class="mono">${escapeHtml(diagnostic.source_reference)}</small></p>`).join("") || "<p>No diagnostics.</p>"}</div></details>`).join("")}</section>`;
+}
+
+async function saveSourceSemantic(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (!form.reportValidity()) return;
+  const values = new FormData(form);
+  try {
+    await api("/api/semantic/edit", {
+      import_name: form.dataset.importName,
+      target_id: form.dataset.targetId,
+      revision: form.dataset.revision,
+      patch: {description: emptyToNull(values.get("description")), synonyms: lines(values.get("synonyms"))},
+      reason: values.get("reason"),
+    });
+    toast("Imported semantics updated; source snapshot preserved.");
+    await load();
+  } catch (error) { toast(error.message); }
 }
 
 function renderZones() {
@@ -731,7 +806,13 @@ function mostConnectedObject(objects = state.data.objects) {
     .forEach(edge => { degree.set(edge.source, (degree.get(edge.source) || 0) + 1); degree.set(edge.target, (degree.get(edge.target) || 0) + 1); });
   return [...degree].sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))[0]?.[0] || objects[0]?.id;
 }
-function annotationText(item) { return `${item.annotation?.description || ""} ${(item.annotation?.synonyms || []).join(" ")}`.toLowerCase(); }
+function annotationText(item) {
+  const imported = [
+    ...(item.source_semantics || []),
+    ...item.fields.flatMap(field => field.source_semantics || []),
+  ].map(entry => `${entry.name} ${entry.description || ""} ${(entry.synonyms || []).join(" ")}`).join(" ");
+  return `${item.annotation?.description || ""} ${(item.annotation?.synonyms || []).join(" ")} ${imported}`.toLowerCase();
+}
 function annotationCommand(record, scopedKnowledge = false) {
   const focus = focusMembership(record.id)[0];
   const scope = focus ? `--focus ${shellArg(focus)}` : shellArg(record.graph);

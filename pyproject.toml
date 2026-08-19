@@ -41,6 +41,9 @@ sqlite = []
 sqlserver = [
   "pymssql>=2.3,<3",
 ]
+semantic = [
+  "PyYAML>=6,<7",
+]
 local-rag = [
   "llama-cpp-python>=0.3.16,<0.4",
 ]
@@ -69,11 +72,14 @@ only-include = [
   "docs/local-retrieval.md",
   "docs/retail-demo.md",
   "docs/sdk.md",
+  "docs/semantic-contract-test.md",
+  "docs/semantic-imports.md",
   "docs/workspaces.md",
   "pyproject.toml",
   "src",
   "tests",
   "tools/check_distribution.py",
+  "tools/run_semantic_contract_test.py",
 ]
 
 [tool.hatch.build]

@@ -11,6 +11,13 @@ from tarel.graph.contracts import GraphDocument, GraphEdge, GraphNode
 from tarel.graph.revision import graph_revision
 from tarel.lineage.contracts import LineageDocument
 from tarel.lineage.revision import lineage_revision
+from tarel.semantics.contracts import SemanticImportDocument
+from tarel.semantics.projection import (
+    semantic_edge_bindings,
+    semantic_import_catalog,
+    semantic_model_catalog,
+    semantic_node_bindings,
+)
 from tarel.workspaces.contracts import WorkspaceDocument
 from tarel.workspaces.scope import ResolvedScope
 
@@ -22,6 +29,7 @@ def browser_graph(
     lineage_names: tuple[str, ...] = (),
     editable: bool = False,
     lineage_documents: Iterable[LineageDocument] = (),
+    semantic_imports: Iterable[SemanticImportDocument] = (),
 ) -> dict[str, object]:
     return _browser_payload(
         (graph,),
@@ -29,6 +37,7 @@ def browser_graph(
         lineage_names=lineage_names,
         editable=editable,
         lineage_documents=tuple(lineage_documents),
+        semantic_imports=tuple(semantic_imports),
     )
 
 
@@ -39,12 +48,14 @@ def browser_workspace(
     workspace: WorkspaceDocument,
     editable: bool = False,
     lineage_documents: Iterable[LineageDocument] = (),
+    semantic_imports: Iterable[SemanticImportDocument] = (),
 ) -> dict[str, object]:
     payload = _browser_payload(
         tuple(graphs),
         workspaces=(workspace,),
         editable=editable,
         lineage_documents=tuple(lineage_documents),
+        semantic_imports=tuple(semantic_imports),
         scope=scope,
     )
     objects = payload["objects"]
@@ -61,6 +72,7 @@ def _browser_payload(
     workspaces: tuple[WorkspaceDocument, ...],
     editable: bool,
     lineage_documents: tuple[LineageDocument, ...],
+    semantic_imports: tuple[SemanticImportDocument, ...],
     lineage_names: tuple[str, ...] = (),
     scope: ResolvedScope | None = None,
 ) -> dict[str, object]:
@@ -73,6 +85,12 @@ def _browser_payload(
     )
     object_payloads: list[dict[str, object]] = []
     edge_payloads: list[dict[str, object]] = []
+    graph_names = {graph.name for graph in graphs}
+    imports = tuple(
+        item for item in semantic_imports if item.graph_name in graph_names
+    )
+    node_semantics = semantic_node_bindings(imports)
+    edge_semantics = semantic_edge_bindings(imports)
     for graph in sorted(graphs, key=lambda item: item.name):
         nodes = graph.node_by_id()
         objects = [
@@ -93,6 +111,7 @@ def _browser_payload(
                 node,
                 fields_by_object[node.id],
                 graph=graph,
+                semantic_bindings=node_semantics,
                 scope_object=selected.get((graph.name, node.id)) if selected else None,
             )
             for node in sorted(objects, key=lambda item: (item.label.casefold(), item.id))
@@ -101,7 +120,14 @@ def _browser_payload(
             payload
             for edge in sorted(graph.edges, key=lambda item: item.id)
             if edge.source_id in object_ids and edge.target_id in object_ids
-            if (payload := _edge_payload(edge, nodes, graph.name)) is not None
+            if (
+                payload := _edge_payload(
+                    edge,
+                    nodes,
+                    graph.name,
+                    source_semantics=edge_semantics.get((graph.name, edge.id), ()),
+                )
+            ) is not None
         )
 
     documents = tuple(lineage_documents)
@@ -140,6 +166,8 @@ def _browser_payload(
         "revision": revision,
         "revisions": revisions,
         "scope": scope.to_dict() if scope else None,
+        "semantic_imports": semantic_import_catalog(imports),
+        "semantic_models": semantic_model_catalog(imports),
         "source_type": first.source_type if len(graphs) == 1 else "workspace",
         "title": scope.workspace if scope else first.name,
         "view_modes": ["space", "lineage"],
@@ -446,6 +474,7 @@ def _object_payload(
     fields: list[GraphNode],
     *,
     graph: GraphDocument,
+    semantic_bindings: dict[tuple[str, str], list[dict[str, object]]],
     scope_object: object | None = None,
 ) -> dict[str, object]:
     annotation = node.annotation.to_dict() if node.annotation else None
@@ -461,7 +490,11 @@ def _object_payload(
         "area_ref": f"{system}:{area}" if system and area else None,
         "catalog": graph.catalog,
         "fields": [
-            _field_payload(field, graph.name)
+            _field_payload(
+                field,
+                graph.name,
+                source_semantics=semantic_bindings.get((graph.name, field.id), ()),
+            )
             for field in sorted(
                 fields,
                 key=lambda item: (int(item.metadata.get("position") or 999999), item.id),
@@ -479,13 +512,19 @@ def _object_payload(
         "review": node.metadata.get("annotation_review"),
         "system": system,
         "schema_ref": f"{graph.name}:{node.metadata.get('namespace')}",
+        "source_semantics": semantic_bindings.get((graph.name, node.id), ()),
         "technical_description": node.metadata.get("technical_description"),
         "type": node.type,
         "zones": list(zones),
     }
 
 
-def _field_payload(node: GraphNode, graph_name: str) -> dict[str, object]:
+def _field_payload(
+    node: GraphNode,
+    graph_name: str,
+    *,
+    source_semantics: Iterable[dict[str, object]] = (),
+) -> dict[str, object]:
     return {
         "annotation": node.annotation.to_dict() if node.annotation else None,
         "annotation_context_documents": node.metadata.get(
@@ -498,6 +537,7 @@ def _field_payload(node: GraphNode, graph_name: str) -> dict[str, object]:
         "position": node.metadata.get("position"),
         "review": node.metadata.get("annotation_review"),
         "semantic_type": node.metadata.get("semantic_type"),
+        "source_semantics": list(source_semantics),
     }
 
 
@@ -505,6 +545,8 @@ def _edge_payload(
     edge: GraphEdge,
     nodes: dict[str, GraphNode],
     graph_name: str,
+    *,
+    source_semantics: Iterable[dict[str, object]] = (),
 ) -> dict[str, object] | None:
     if edge.type not in {"foreign_key", "relationship_candidate"}:
         return None
@@ -523,6 +565,7 @@ def _edge_payload(
         "graph": graph_name,
         "id": _ui_id(graph_name, edge.id),
         "metadata": edge.metadata,
+        "source_semantics": list(source_semantics),
         "source": _ui_id(graph_name, source.id),
         "target": _ui_id(graph_name, target.id),
         "type": edge.type,

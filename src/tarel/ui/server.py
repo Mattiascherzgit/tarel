@@ -47,6 +47,12 @@ from tarel.lineage.application import (
 from tarel.lineage.contracts import LineageDocument, LineageFailure
 from tarel.lineage.revision import lineage_revision
 from tarel.relationships.core import RelationshipFailure
+from tarel.semantics.application import (
+    edit_semantic_source_use_case,
+    list_semantic_imports_use_case,
+    load_semantic_import_use_case,
+)
+from tarel.semantics.contracts import SemanticFailure
 from tarel.ui.presentation import (
     browser_focus_catalog,
     browser_focus_selection,
@@ -99,12 +105,18 @@ class TarelUIBackend:
             workspace = load_workspace_use_case(self.config.workspace)
             scope = self._scope()
             graphs = tuple(load_graph_use_case(name) for name in scope.graph_names)
+            semantic_imports = tuple(
+                item
+                for graph in graphs
+                for item in list_semantic_imports_use_case(graph_name=graph.name)
+            )
             payload = browser_workspace(
                 graphs,
                 scope,
                 workspace=workspace,
                 editable=self.config.editable,
                 lineage_documents=documents,
+                semantic_imports=semantic_imports,
             )
         else:
             graph = load_graph_use_case(self._single_graph())
@@ -117,6 +129,7 @@ class TarelUIBackend:
                 workspaces=workspaces,
                 editable=self.config.editable,
                 lineage_documents=documents,
+                semantic_imports=list_semantic_imports_use_case(graph_name=graph.name),
             )
         focus_documents = self._focus_documents()
         payload["focuses"] = browser_focus_catalog(
@@ -182,6 +195,26 @@ class TarelUIBackend:
                 reason=_string(payload, "reason"),
             )
             return {"record": result.record.to_dict(), "revision": graph_revision(result.graph)}
+        if route == "/api/semantic/edit":
+            name = _string(payload, "import_name")
+            document = load_semantic_import_use_case(name)
+            if document.graph_name not in self._graph_names():
+                raise UIFailure(
+                    "semantic_import_outside_scope",
+                    f"Semantic import is outside the UI scope: {name}",
+                )
+            result = edit_semantic_source_use_case(
+                name,
+                _string(payload, "target_id"),
+                _object(payload, "patch"),
+                reason=_string(payload, "reason"),
+                expected_revision=_string(payload, "revision"),
+            )
+            return {
+                "import_name": name,
+                "revision": result.document.revision,
+                "target_id": _string(payload, "target_id"),
+            }
         if route == "/api/annotation/decision":
             graph_name = self._check_graph_revision(payload)
             result = decide_annotation_use_case(
@@ -668,12 +701,14 @@ def _ui_failure(exc: Exception) -> UIFailure:
     if isinstance(exc, UIFailure):
         return exc
     if isinstance(exc, (AnnotationFailure, FocusFailure, GraphFailure, KnowledgeFailure,
-                        LineageFailure, RelationshipFailure, WorkspaceFailure)):
+                        LineageFailure, RelationshipFailure, SemanticFailure,
+                        WorkspaceFailure)):
         code = getattr(exc, "code", "ui_operation_failed")
         status = 409 if code in {
             "focus_stale",
             "stale_graph",
             "stale_lineage",
+            "stale_semantic_import",
             "stale_workspace",
         } else 400
         if code.endswith("_not_found"):

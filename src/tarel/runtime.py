@@ -13,6 +13,7 @@ from tarel.lineage.analysis_cache import FileLineageAnalysisCache
 from tarel.lineage.change_store import FileLineageChangeStore
 from tarel.lineage.store import FileLineageStore
 from tarel.retrieval.index import FileRetrievalIndex
+from tarel.semantics.store import FileSemanticImportStore
 from tarel.sources.store import FileSourceStore
 from tarel.workspaces.store import FileWorkspaceStore
 
@@ -56,3 +57,6 @@ class TarelRuntime:
 
     def source_store(self) -> FileSourceStore:
         return FileSourceStore(self.root / "sources")
+
+    def semantic_import_store(self) -> FileSemanticImportStore:
+        return FileSemanticImportStore(self.root / "semantic-imports")
