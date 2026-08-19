@@ -59,6 +59,9 @@ knowledge, review schema drift, and move from a report or measure back through E
   relationships become a deterministic graph.
 - **Builds reviewed semantics** — models or coding agents propose descriptions, roles, grain,
   synonyms, field semantics, and possible joins; people validate, edit, defer, or reject them.
+- **Imports external semantics** — experimental Apache Ossie, SML, and Cube YAML readers preserve,
+  diagnose, and bind supported constructs to stable graph IDs while keeping them separate from
+  reviewed TAREL annotations.
 - **Traces lineage** — reports, visuals, measures, fields, marts, models, procedures, and jobs can
   be traversed across multiple lineage documents and physical graphs.
 - **Retrieves context** — dependency-free BM25 and optional CPU-local Qwen embeddings locate
@@ -143,6 +146,9 @@ python -m pip install 'tarel[sqlserver]'
 
 # CPU-local semantic retrieval through llama.cpp
 python -m pip install 'tarel[local-rag]'
+
+# YAML semantic-model imports (Apache Ossie, SML, and Cube)
+python -m pip install 'tarel[semantic]'
 ```
 
 SQLite support is built in. Other database and lake connectors, plus workflow and report lineage

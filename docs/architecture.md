@@ -11,7 +11,7 @@ CLI · Python SDK · local browser UI
        application use cases
                  │
                  ▼
- graph · annotation · lineage · workspace · retrieval
+ graph · annotation · semantic import · lineage · workspace · retrieval
                  │
                  ▼
  connectors · providers · file stores · optional indexes
@@ -26,7 +26,7 @@ compose application use cases, but they do not own a second implementation of th
 |---|---|---|
 | Entry adapters | `tarel.cli`, `tarel.sdk`, `tarel.ui` | Parse input, call use cases, render typed results |
 | Application | `tarel.application`, `tarel.grounding_application`, domain `application.py` modules | Coordinate stores, domain transformations, and explicit side effects |
-| Domain | `graph`, `annotations`, `lineage`, `focus`, `relationships`, `workspaces`, `context`, `grounding` | Contracts, validation, revisions, review state, traversal, and deterministic compilation |
+| Domain | `graph`, `annotations`, `semantics`, `lineage`, `focus`, `relationships`, `workspaces`, `context`, `grounding` | Contracts, validation, revisions, review state, traversal, and deterministic compilation |
 | Infrastructure | `connectors`, `providers`, `retrieval`, domain stores | Observe external systems and persist local rebuildable state |
 | Runtime | `tarel.runtime` | Bind one SDK client to an explicit local state root |
 
@@ -61,6 +61,12 @@ read-only source
 Technical observations and semantic claims remain separate. An annotation begins as a draft and
 keeps its evidence, provider identity, confidence, and review state. The source remains
 authoritative; TAREL stores metadata and reviewable knowledge rather than a warehouse copy.
+
+External semantic models form a third, explicit layer. A `tarel.semantic_import.v0.1` document
+keeps the exact source snapshot, normalized semantic objects, diagnostics, and deterministic
+bindings to graph node or edge IDs. Imported values are not promoted to TAREL annotations. Source
+corrections are overlays that preserve the original snapshot. This experimental boundary is
+documented in [Semantic-model imports](semantic-imports.md).
 
 Source enrichment is a separate, policy-gated observation path. Each logical source explicitly
 grants `aggregates`, `small_domains`, and/or `raw_samples`; an omitted grant denies that operation.
@@ -111,6 +117,10 @@ TAREL deliberately has a few narrow extension seams:
   evidence. Reviewed external packages register through the `tarel.connectors` entry-point group.
 - **Providers** return schema-validated annotation or lineage workfiles. Provider profiles and
   credentials stay outside persisted graphs and context packets.
+- **Semantic readers** preserve an external semantic model, normalize supported constructs, and
+  bind only exact matches to a TAREL graph. Apache Ossie, SML, and Cube YAML exercise one internal
+  contract. A public plugin ABI waits until that contract has survived broader format coverage and
+  review.
 - **Stores** are file-first today. Shared database-backed stores and authorization can be added as
   optional adapters without changing domain contracts.
 
@@ -125,6 +135,7 @@ The selected state root contains revisioned JSON documents and rebuildable index
 .tarel/
 ├── sources/
 ├── graphs/
+├── semantic-imports/
 ├── lineage/
 ├── focus/
 ├── workspaces/

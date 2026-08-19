@@ -129,6 +129,33 @@ explicitly selected lineage documents.
 The lower-level `search`, `context`, and `lineage` namespaces remain available when an embedding
 application wants to orchestrate each step itself.
 
+## Import an external semantic model
+
+Imported semantic values remain distinct from TAREL-authored annotations. Experimental readers
+accept Apache Ossie files plus SML and Cube YAML project directories and preserve exact source
+snapshots:
+
+```python
+result = tarel.semantic.import_file(
+    "retail-ossie",
+    graph="warehouse",
+    source="semantic-model.yaml",
+    format_name="apache-ossie",
+)
+
+imports = tarel.semantic.list(graph="warehouse")
+document = tarel.semantic.load("retail-ossie")
+view = tarel.view.graph("warehouse", editable=True)
+```
+
+JSON inputs require no extra dependency; YAML needs `tarel[semantic]`. Project inputs are stored as
+deterministic multi-file bundles. Supported datasets, simple fields, metrics, and declared
+relationships normalize into one contract; only exact graph bindings receive stable graph IDs.
+Unknown or unbound constructs are returned as diagnostics and remain present in the source
+snapshot. `tarel.semantic.edit(...)` records a description or synonym overlay with a reason and
+optional optimistic revision check; it never rewrites the original source. See
+[Semantic-model imports](semantic-imports.md) for the contract and current limits.
+
 When a graph has exactly one registered source, grounding selects it automatically. Multiple
 profiles mapped to the same graph fail closed; pass `sources=("warehouse-prod",)` to choose the
 execution environment explicitly. Source-profile changes invalidate the stable grounding hash even

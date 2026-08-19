@@ -103,6 +103,8 @@ from tarel.relationships.core import RelationshipFailure
 from tarel.retrieval.contracts import RetrievalFailure
 from tarel.retrieval.local import DEFAULT_MODEL_NAME
 from tarel.search import SearchFailure, SearchResults
+from tarel.semantics.cli import add_semantic_commands, dispatch_semantic
+from tarel.semantics.contracts import SemanticFailure
 from tarel.sources.application import (
     SourceCheck,
     SourceEnrichmentResult,
@@ -692,6 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     ui.add_argument("--no-open", action="store_true", help="Do not open the browser automatically.")
 
     add_lineage_commands(subcommands)
+    add_semantic_commands(subcommands)
 
     focus = subcommands.add_parser(
         "focus",
@@ -1074,6 +1077,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         lineage_result = dispatch_lineage(args)
         if lineage_result is not None:
             return lineage_result
+
+        semantic_result = dispatch_semantic(args)
+        if semantic_result is not None:
+            return semantic_result
 
         if args.command == "focus" and args.focus_command == "build":
             result = build_focus_use_case(
@@ -2170,6 +2177,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         RelationshipFailure,
         RetrievalFailure,
         SearchFailure,
+        SemanticFailure,
         SourceFailure,
         WorkspaceFailure,
     ) as exc:

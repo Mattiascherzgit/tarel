@@ -117,6 +117,14 @@ from tarel.retrieval.contracts import IndexBuildResult
 from tarel.retrieval.local import DEFAULT_MODEL_NAME, ModelDownloadResult
 from tarel.runtime import TarelRuntime
 from tarel.search import SearchResults
+from tarel.semantics.application import (
+    SemanticImportResult,
+    edit_semantic_source_use_case,
+    import_semantic_use_case,
+    list_semantic_imports_use_case,
+    load_semantic_import_use_case,
+)
+from tarel.semantics.contracts import SemanticImportDocument
 from tarel.sources.application import (
     SourceChangeResult,
     SourceCheck,
@@ -158,6 +166,7 @@ class Tarel:
         "relationship",
         "runtime",
         "search",
+        "semantic",
         "source",
         "view",
         "workspace",
@@ -169,6 +178,7 @@ class Tarel:
         self.workspace = WorkspaceAPI(self.runtime)
         self.search = SearchAPI(self.runtime)
         self.source = SourceAPI(self.runtime)
+        self.semantic = SemanticAPI(self.runtime)
         self.context = ContextAPI(self.runtime)
         self.grounding = GroundingAPI(self.runtime)
         self.lineage = LineageAPI(self.runtime)
@@ -334,6 +344,52 @@ class SourceAPI(_RuntimeAPI):
             profile_row_limit=profile_row_limit,
             sample_limit=sample_limit,
             persist_join_candidates=persist_join_candidates,
+            runtime=self._runtime,
+        )
+
+
+class SemanticAPI(_RuntimeAPI):
+    """Import external semantics without replacing TAREL-authored annotations."""
+
+    def list(self, *, graph: str | None = None) -> tuple[SemanticImportDocument, ...]:
+        return list_semantic_imports_use_case(graph_name=graph, runtime=self._runtime)
+
+    def load(self, name: str) -> SemanticImportDocument:
+        return load_semantic_import_use_case(name, runtime=self._runtime)
+
+    def import_file(
+        self,
+        name: str,
+        *,
+        graph: str,
+        source: str | Path,
+        format_name: str = "apache-ossie",
+        replace: bool = False,
+    ) -> SemanticImportResult:
+        return import_semantic_use_case(
+            name,
+            graph_name=graph,
+            source_path=Path(source),
+            format_name=format_name,
+            replace_existing=replace,
+            runtime=self._runtime,
+        )
+
+    def edit(
+        self,
+        name: str,
+        target_id: str,
+        patch: dict[str, object],
+        *,
+        reason: str,
+        revision: str | None = None,
+    ) -> SemanticImportResult:
+        return edit_semantic_source_use_case(
+            name,
+            target_id,
+            patch,
+            reason=reason,
+            expected_revision=revision,
             runtime=self._runtime,
         )
 
@@ -1224,11 +1280,16 @@ class ViewAPI(_RuntimeAPI):
             load_workspace_use_case(item, runtime=self._runtime)
             for item in list_workspaces_use_case(runtime=self._runtime)
         )
+        semantic_imports = list_semantic_imports_use_case(
+            graph_name=name,
+            runtime=self._runtime,
+        )
         return browser_graph(
             graph,
             workspaces=workspaces,
             editable=editable,
             lineage_documents=documents,
+            semantic_imports=semantic_imports,
         )
 
     def workspace(
@@ -1261,12 +1322,21 @@ class ViewAPI(_RuntimeAPI):
         lineage_documents = tuple(
             load_lineage_use_case(item, runtime=self._runtime) for item in lineages
         )
+        semantic_imports = tuple(
+            item
+            for graph_name in scope.graph_names
+            for item in list_semantic_imports_use_case(
+                graph_name=graph_name,
+                runtime=self._runtime,
+            )
+        )
         return browser_workspace(
             graph_documents,
             scope,
             workspace=workspace,
             editable=editable,
             lineage_documents=lineage_documents,
+            semantic_imports=semantic_imports,
         )
 
 
