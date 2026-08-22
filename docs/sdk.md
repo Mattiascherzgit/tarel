@@ -409,8 +409,40 @@ and may include caller-measured `duration_ms` and result `truncated` evidence. T
 SQL text, MongoDB filters or pipelines, parameters, documents, raw rows, connection URLs,
 credentials, or free-form database errors. Imports are create-only. `lineage.list_runtime()` lists
 these immutable run documents. See [Runtime lineage](runtime-lineage.md) for the current boundary
-and [Entity-resolution candidates](entity-resolution-candidates.md) for the reviewed gap and
-proposed contract.
+and [Entity-resolution candidates](entity-resolution-candidates.md) for the separate matching
+hypothesis contract.
+
+### Retrieve entity-resolution hypotheses
+
+Entity-resolution candidates are graph-bound information rather than executable joins. The
+default retrieval mode prefers reviewed rules for a field pair and otherwise offers explicitly
+labelled candidates:
+
+```python
+from tarel.sdk import EntityResolutionCandidate
+
+candidate = EntityResolutionCandidate.from_dict(sanitized_candidate_payload)
+tarel.entity_resolution.import_candidate(candidate)
+
+matches = tarel.entity_resolution.find(
+    "music",
+    source="mb.ArtistCredit.Name",
+    target="mb.Artist.Name",
+    mode="confirmed_then_candidates",
+)
+
+for match in matches:
+    print(match.usage, match.requires_runtime_validation)
+    print(match.candidate.evidence.to_dict())
+```
+
+Unreviewed matches use `exploratory_only` and require a runtime probe by the caller. TAREL stores
+only declared rule operations, counts, rates, confidence, graph identity, and run provenance. It
+does not store samples or execute matching. `confirmed_only` excludes every unreviewed rule;
+`include_candidates` returns reviewed and unreviewed active candidates. Rejected candidates remain
+in the audit store but are never retrieved. See
+[Entity-resolution candidates](entity-resolution-candidates.md) for CLI commands, metric
+invariants, and the violet browser projection.
 
 ### Feed a Space/Lineage GUI
 

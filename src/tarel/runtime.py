@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from tarel.entity_resolution.store import FileEntityResolutionStore
 from tarel.focus.store import FileFocusStore
 from tarel.graph.change_store import FileGraphChangeStore
 from tarel.graph.store import FileGraphStore
@@ -64,3 +65,6 @@ class TarelRuntime:
 
     def semantic_import_store(self) -> FileSemanticImportStore:
         return FileSemanticImportStore(self.root / "semantic-imports")
+
+    def entity_resolution_store(self) -> FileEntityResolutionStore:
+        return FileEntityResolutionStore(self.root / "entity-resolution")

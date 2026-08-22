@@ -48,7 +48,7 @@
           <section class="canvas-pane">
             <div class="canvas-toolbar">
               <div><strong id="canvas-title">Schema topology</strong><span id="canvas-subtitle"></span></div>
-              <div class="toolbar-actions"><div class="canvas-mode" role="group" aria-label="Canvas mode"><button class="chip is-active" data-canvas-mode="space">Space</button><button class="chip" data-canvas-mode="lineage">Lineage</button></div><button id="add-lineage" class="quiet-button">＋ Job / hop</button><button id="show-all" class="quiet-button">Show all</button><button id="fit-graph" class="quiet-button">Fit focus</button><button id="trace-selected" class="primary-button">Trace upstream</button></div>
+              <div class="toolbar-actions"><div class="canvas-mode" role="group" aria-label="Canvas mode"><button class="chip is-active" data-canvas-mode="space">Space</button><button class="chip" data-canvas-mode="lineage">Lineage</button></div><label class="compact-check"><input id="toggle-entity-resolution" type="checkbox" /><span>Entity candidates</span></label><button id="add-lineage" class="quiet-button">＋ Job / hop</button><button id="show-all" class="quiet-button">Show all</button><button id="fit-graph" class="quiet-button">Fit focus</button><button id="trace-selected" class="primary-button">Trace upstream</button></div>
             </div>
             <div id="graph-canvas" role="application" aria-label="Interactive schema graph"></div>
             <section id="lineage-drawer" class="lineage-drawer" hidden>

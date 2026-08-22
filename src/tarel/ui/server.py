@@ -31,6 +31,10 @@ from tarel.application import (
     load_workspace_use_case,
     resolve_workspace_scope_use_case,
 )
+from tarel.entity_resolution.application import (
+    find_entity_resolution_candidates_for_graph_use_case,
+)
+from tarel.entity_resolution.contracts import EntityResolutionFailure
 from tarel.focus.contracts import FocusDocument, FocusFailure
 from tarel.focus.core import require_current_focus
 from tarel.graph.contracts import GraphDocument, GraphFailure
@@ -117,6 +121,11 @@ class TarelUIBackend:
                 editable=self.config.editable,
                 lineage_documents=documents,
                 semantic_imports=semantic_imports,
+                entity_resolution_matches=tuple(
+                    match
+                    for graph in graphs
+                    for match in find_entity_resolution_candidates_for_graph_use_case(graph)
+                ),
             )
         else:
             graph = load_graph_use_case(self._single_graph())
@@ -130,6 +139,9 @@ class TarelUIBackend:
                 editable=self.config.editable,
                 lineage_documents=documents,
                 semantic_imports=list_semantic_imports_use_case(graph_name=graph.name),
+                entity_resolution_matches=find_entity_resolution_candidates_for_graph_use_case(
+                    graph
+                ),
             )
         focus_documents = self._focus_documents()
         payload["focuses"] = browser_focus_catalog(
@@ -700,9 +712,20 @@ def run_ui(
 def _ui_failure(exc: Exception) -> UIFailure:
     if isinstance(exc, UIFailure):
         return exc
-    if isinstance(exc, (AnnotationFailure, FocusFailure, GraphFailure, KnowledgeFailure,
-                        LineageFailure, RelationshipFailure, SemanticFailure,
-                        WorkspaceFailure)):
+    if isinstance(
+        exc,
+        (
+            AnnotationFailure,
+            EntityResolutionFailure,
+            FocusFailure,
+            GraphFailure,
+            KnowledgeFailure,
+            LineageFailure,
+            RelationshipFailure,
+            SemanticFailure,
+            WorkspaceFailure,
+        ),
+    ):
         code = getattr(exc, "code", "ui_operation_failed")
         status = 409 if code in {
             "focus_stale",

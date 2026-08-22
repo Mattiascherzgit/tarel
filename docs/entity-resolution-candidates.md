@@ -1,74 +1,139 @@
 # Entity-resolution candidates
 
-TAREL's current public SDK cannot yet represent a fully auditable entity-resolution candidate.
-The existing `relationship_candidate` model is deliberately narrower: it can bind graph fields,
-store aggregate transformed-join evidence, carry confidence and review state, and expose only
-human-validated relationships to normal context expansion. It must not be repurposed to imply that
-two records or entities are identical.
+TAREL has an experimental, graph-bound contract for entity-resolution hypotheses. It keeps
+identity matching separate from technical joins: an `entity_resolution_candidate` says that two
+fields may support a record-identity rule, not that they are a foreign key or an executable join.
 
-## Gap assessment
+Candidates are available to CLI and SDK callers before human review. Every unreviewed match is
+labelled `exploratory_only`, requires runtime validation, and carries its measured evidence. TAREL
+does not execute the rule, query a source, or promote a confidence score into an approval.
 
-| Requirement | Current public model |
-| --- | --- |
-| Participating objects and fields | Available on relationship candidates |
-| Fixed-segment join transformation | Available with aggregate coverage and overlap evidence |
-| Draft, validated, and rejected review states | Available for relationships |
-| General normalization or matching rule | Missing |
-| Producing agent and runtime-run provenance | Missing as a candidate invariant |
-| Positive evidence and counterexamples | Missing as a bounded ER evidence model |
-| Coverage, collision rate, and confidence together | Collision rate and general ER coverage are missing |
-| Candidate/reviewed ER lifecycle | Missing as a distinct semantic contract |
-| Confirmed-only versus explicit-candidate retrieval | Missing for entity resolution |
+## Bounded contract
 
-The safe behavior today is therefore to keep an uncertain ER rule outside TAREL's confirmed graph.
-A caller may retain its own observation, but must not write it as a validated relationship. This is
-why a rule inferred from a few MusicBrainz samples cannot silently enter normal agent context.
-
-## Small contract proposal for human review
-
-Before implementation, the Core contract should be reviewed. A minimal, separate experimental
-input could contain:
+The contract is `tarel.entity-resolution-candidate.v0.1`. One candidate contains exact field node
+IDs from one graph revision, a small declarative rule, aggregate evidence, producing-run
+provenance, and optional human review:
 
 ```json
 {
-  "contract_version": "tarel.entity-resolution-candidate-input.v0.1",
-  "candidate_id": "artist-credit-normalized-name-v1",
+  "contract_version": "tarel.entity-resolution-candidate.v0.1",
+  "id": "artist-credit-normalized-name-v1",
   "graph": {"name": "music", "revision": "<sha256>"},
-  "provenance": {"run_id": "agent-run-42", "producer": "v2-agent"},
-  "inputs": [
-    {"object_id": "<node-id>", "field_ids": ["<field-node-id>"]},
-    {"object_id": "<node-id>", "field_ids": ["<field-node-id>"]}
-  ],
+  "source_field_id": "<field-node-id>",
+  "target_field_id": "<field-node-id>",
   "rule": {
     "kind": "normalized_exact",
     "operations": ["unicode_nfkc", "trim", "casefold"]
   },
   "evidence": {
+    "level": "sample_tested",
     "evaluated_count": 1000,
     "matched_count": 720,
-    "coverage": 0.72,
-    "collision_rate": 0.03,
-    "confidence": 0.61,
+    "collision_count": 18,
     "counterexample_count": 14,
-    "counterexample_hashes": ["<sha256>"]
+    "coverage": 0.72,
+    "collision_rate": 0.025,
+    "confidence": 0.61
   },
-  "status": "candidate",
-  "reviews": []
+  "provenance": {"run_id": "agent-run-42", "producer": "v2-agent"},
+  "state": "candidate",
+  "review": null
 }
 ```
 
-Raw samples, original counterexample values, query text, secrets, and local paths must remain
-outside the artifact. Hashes are optional correlation evidence, not proof of correctness. Metrics
-must state their evaluated population; they must never be extrapolated silently from a small
-sample.
+`coverage` must equal `matched_count / evaluated_count`; `collision_rate` must equal
+`collision_count / matched_count`. The contract rejects inconsistent values rather than accepting
+a persuasive score without its denominator. Evidence levels are `proposed`, `sample_tested`, and
+`population_tested`. A proposed rule must report zero evaluated rows and zero measured rates.
 
-The proposed lifecycle is `draft` → `candidate` → `reviewed`, with `rejected` possible from any
-reviewable state. A human review entry records the decision and a bounded reason. Default retrieval
-would be `confirmed_only`, returning only reviewed candidates with an explicit approval decision.
-An `include_candidates` mode would be opt-in and label every unconfirmed rule as a hypothesis; it
-must never turn it into a graph relationship or an executable normalization rule.
+The initial rule vocabulary is intentionally small: `normalized_exact` with an ordered, unique
+combination of `unicode_nfkc`, `trim`, `casefold`, `collapse_whitespace`, and
+`strip_punctuation`. Arbitrary code, regular expressions, SQL, and model-generated functions are
+not accepted. The operations are applied to both endpoints in their declared order; asymmetric
+parsing needs a future reviewed contract rather than an implicit convention.
 
-Open architecture decisions are the exact rule vocabulary, whether reviewed ER rules become a
-separate reusable object, how metric populations are identified without leaking data, and which
-human identity reference is safe to persist. Until those decisions are accepted, this document is
-a proposal, not a public SDK promise.
+Raw samples, record values, original counterexamples, query text, secrets, and local paths are
+outside the artifact. Stored files use mode `0600` below `.tarel/entity-resolution/`.
+
+## CLI
+
+```bash
+tarel entity import --source sanitized-candidate.json --format json
+
+tarel entity find music \
+  --source-field mb.ArtistCredit.Name \
+  --target-field mb.Artist.Name \
+  --mode confirmed_then_candidates \
+  --format json
+
+tarel entity list --graph music --format json
+tarel entity show artist-credit-normalized-name-v1 --format json
+
+tarel entity review artist-credit-normalized-name-v1 \
+  --decision approve \
+  --reason "Population and collision evidence reviewed." \
+  --revision <candidate-revision> \
+  --format json
+```
+
+Imports are create-only. Repeating an identical import is idempotent; different content under an
+existing ID fails. A review uses optimistic revision checking and changes an unreviewed candidate
+once to `reviewed` or `rejected`. Rejected candidates remain available through `list` and `show`
+for audit but never appear in normal retrieval.
+
+## SDK
+
+```python
+from tarel.sdk import EntityResolutionCandidate, Tarel
+
+tarel = Tarel(".tarel")
+candidate = EntityResolutionCandidate.from_dict(sanitized_candidate_payload)
+tarel.entity_resolution.import_candidate(candidate)
+
+matches = tarel.entity_resolution.find(
+    "music",
+    source="mb.ArtistCredit.Name",
+    target="mb.Artist.Name",
+    mode="confirmed_then_candidates",
+)
+
+for match in matches:
+    if match.requires_runtime_validation:
+        # V2 may probe the declared rule with a controlled source tool.
+        # TAREL itself never executes it.
+        pass
+```
+
+CLI and SDK call the same application use cases. The public SDK also exports the typed candidate,
+rule, evidence, provenance, and match values.
+
+## Retrieval policy
+
+- `confirmed_only` returns only human-approved rules.
+- `include_candidates` returns approved and unreviewed candidates.
+- `confirmed_then_candidates` returns approved rules for a field pair when present; otherwise it
+  offers that pair's unreviewed candidates as explicit hypotheses.
+
+The last mode is the default for `find`. It lets an agent try the best available hypothesis when no
+confirmed rule exists, while `usage`, `requires_runtime_validation`, `warning`, evidence level,
+counts, rates, confidence, and review state remain visible in every match.
+
+Only candidates bound to the current graph revision are returned by `find` or projected into the
+browser. `list` and `show` retain older candidates for audit. This prevents a rule from silently
+surviving changed field topology.
+
+## Graph and browser projection
+
+The canonical candidate stays in its separate artifact. TAREL projects current retrieval matches
+onto the information-space graph as `entity_resolution_candidate` edges without modifying the
+stored `GraphDocument` or its revision. Normal relationship expansion and context joins therefore
+cannot consume them.
+
+The browser lists candidate evidence in each connected table inspector. A disabled-by-default
+**Entity candidates** toggle renders unreviewed candidates as dashed violet edges and reviewed
+rules as solid violet edges. The projection includes aggregate evidence and provenance, never raw
+records.
+
+This first slice does not cluster records, execute matching, append multiple evaluation snapshots,
+or inject entity hypotheses into ordinary context packets. V2 or another controlled caller owns
+runtime probing and may import a later candidate version with a new ID when evidence changes.
