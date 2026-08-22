@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 
 from tarel.annotations.contracts import AnnotationFailure, AnnotationTask
 from tarel.connectors.contracts import ObjectProfileResult, SampleResult
@@ -85,6 +86,122 @@ def annotation_task_for_target(graph: GraphDocument, target_id: str) -> Annotati
     if node is None or node.type not in {"table", "view"}:
         raise AnnotationFailure("target_not_found", f"Annotatable object not found: {target_id}")
     return _task_for_object(graph, node)
+
+
+def validate_annotation_samples(
+    graph: GraphDocument,
+    samples_by_target: Mapping[str, SampleResult],
+) -> dict[str, SampleResult]:
+    if not isinstance(samples_by_target, Mapping):
+        raise AnnotationFailure(
+            "invalid_annotation_samples",
+            "Caller-supplied annotation samples must be a target-to-sample mapping.",
+        )
+    nodes = graph.node_by_id()
+    fields_by_object: dict[str, set[str]] = {}
+    for node in graph.nodes:
+        parent = node.metadata.get("object_id") if node.type == "field" else None
+        if isinstance(parent, str):
+            fields_by_object.setdefault(parent, set()).add(node.label)
+
+    validated: dict[str, SampleResult] = {}
+    for target_id, sample in samples_by_target.items():
+        if not isinstance(target_id, str) or not target_id:
+            raise AnnotationFailure(
+                "invalid_annotation_samples",
+                "Caller-supplied annotation sample targets must be stable object IDs.",
+            )
+        node = nodes.get(target_id)
+        if node is None or node.type not in {"table", "view"}:
+            raise AnnotationFailure(
+                "invalid_annotation_samples",
+                f"Annotatable sample target not found: {target_id}",
+            )
+        _validate_annotation_sample(sample, node, fields_by_object.get(target_id, set()))
+        validated[target_id] = sample
+    return validated
+
+
+def _validate_annotation_sample(
+    sample: SampleResult,
+    node: GraphNode,
+    field_names: set[str],
+) -> None:
+    if not isinstance(sample, SampleResult):
+        raise AnnotationFailure(
+            "invalid_annotation_samples",
+            f"Caller-supplied sample is not a SampleResult: {node.id}",
+        )
+    for value, label in (
+        (sample.connector, "connector"),
+        (sample.catalog, "catalog"),
+        (sample.namespace, "namespace"),
+        (sample.object_name, "object name"),
+    ):
+        if not isinstance(value, str) or not value.strip():
+            raise AnnotationFailure(
+                "invalid_annotation_samples",
+                f"Caller-supplied sample {label} must be a non-empty string: {node.id}",
+            )
+    target_namespace = node.metadata.get("namespace")
+    target_name = node.metadata.get("name")
+    if sample.namespace != target_namespace or sample.object_name != target_name:
+        raise AnnotationFailure(
+            "annotation_sample_target_mismatch",
+            f"Caller-supplied sample does not match graph object: {node.id}",
+        )
+    for values, label in (
+        (sample.selected_fields, "selected fields"),
+        (sample.omitted_fields, "omitted fields"),
+        (sample.ordered_by, "ordering fields"),
+    ):
+        if not isinstance(values, tuple) or not all(
+            isinstance(value, str) and value for value in values
+        ):
+            raise AnnotationFailure(
+                "invalid_annotation_samples",
+                f"Caller-supplied sample has invalid {label}: {node.id}",
+            )
+        if len(values) != len(set(values)):
+            raise AnnotationFailure(
+                "invalid_annotation_samples",
+                f"Caller-supplied sample has duplicate {label}: {node.id}",
+            )
+    selected = set(sample.selected_fields)
+    omitted = set(sample.omitted_fields)
+    if selected & omitted or selected | omitted != field_names:
+        raise AnnotationFailure(
+            "annotation_sample_field_mismatch",
+            f"Caller-supplied sample field coverage does not match graph object: {node.id}",
+        )
+    if not set(sample.ordered_by) <= field_names:
+        raise AnnotationFailure(
+            "annotation_sample_field_mismatch",
+            f"Caller-supplied sample ordering does not match graph object: {node.id}",
+        )
+    if not isinstance(sample.rows, tuple) or len(sample.rows) > 10:
+        raise AnnotationFailure(
+            "invalid_annotation_samples",
+            f"Caller-supplied samples may contain at most 10 rows per object: {node.id}",
+        )
+    if not isinstance(sample.truncated_values, bool):
+        raise AnnotationFailure(
+            "invalid_annotation_samples",
+            f"Caller-supplied sample truncation state is invalid: {node.id}",
+        )
+    for row in sample.rows:
+        if not isinstance(row, dict) or set(row) != selected:
+            raise AnnotationFailure(
+                "annotation_sample_field_mismatch",
+                f"Caller-supplied sample row fields do not match selected fields: {node.id}",
+            )
+    try:
+        json.dumps(sample.to_dict(), ensure_ascii=False, allow_nan=False, sort_keys=True)
+    except (TypeError, ValueError) as exc:
+        raise AnnotationFailure(
+            "invalid_annotation_samples",
+            f"Caller-supplied sample values are not JSON-safe: {node.id}",
+        ) from exc
 
 
 def _task_for_object(

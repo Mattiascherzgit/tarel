@@ -449,13 +449,49 @@ function renderInspector() {
       ${fact("Primary key", item.primary_key.join(", ") || "—")}${fact("Relationships", String(relationships.length))}
     </div></section>
     ${sourceSemanticCards(item.source_semantics || [], "Imported dataset semantics")}
-    <section class="detail-section"><h3>Fields · ${item.fields.length}</h3><table class="fields-table"><thead><tr><th>Name</th><th>Type</th><th>TAREL</th><th>Source</th></tr></thead><tbody>${item.fields.map(field => `<tr><td>${escapeHtml(field.label)}</td><td class="mono">${escapeHtml(field.data_type || "—")}</td><td>${field.semantic_type ? `<span class="semantic-pill">${escapeHtml(field.semantic_type)}</span>` : "—"}</td><td>${(field.source_semantics || []).map(entry => `<span class="source-pill" title="${escapeAttr(entry.import_name)}">${escapeHtml(entry.name)}</span>`).join(" ") || "—"}</td></tr>`).join("")}</tbody></table></section>
+    <section class="detail-section"><h3>Fields · ${item.fields.length}</h3><div class="field-list">${item.fields.map(fieldAnnotationCard).join("")}</div></section>
     ${sourceSemanticCards(fieldSemantics, "Imported field semantics")}
     ${sourceSemanticCards(relationshipSemantics, "Imported relationship semantics")}
     ${sourceSemanticCards(semanticCatalogEntries(), "Model-wide & unbound source semantics")}
     ${semanticImportDiagnostics()}
     ${annotation?.warnings?.length ? `<section class="detail-section"><h3>Warnings</h3><p class="description">${annotation.warnings.map(escapeHtml).join(" · ")}</p></section>` : ""}`;
   $$(".source-semantic-form").forEach(form => form.addEventListener("submit", saveSourceSemantic));
+}
+
+function fieldAnnotationCard(field) {
+  const annotation = field.annotation;
+  const provenance = annotation?.provenance;
+  const reviewEvents = Array.isArray(field.review?.events) ? field.review.events : [];
+  const latestReview = reviewEvents[reviewEvents.length - 1];
+  const sourceSemantics = field.source_semantics || [];
+  const contextDocuments = field.annotation_context_documents || [];
+  return `<details class="field-card">
+    <summary>
+      <span class="field-summary-copy"><strong>${escapeHtml(field.label)}</strong><small class="mono">${escapeHtml(field.data_type || "—")}</small></span>
+      <span class="field-summary-badges">${field.semantic_type ? `<span class="semantic-pill">${escapeHtml(field.semantic_type)}</span>` : ""}<span class="state-badge">${escapeHtml(stateLabel(annotation?.state || "missing"))}</span></span>
+    </summary>
+    <div class="field-annotation-body">
+      ${annotation ? `<p class="description">${escapeHtml(annotation.description)}</p>
+        <div class="fact-grid">${fact("Role", annotation.role || "—")}${fact("Semantic type", field.semantic_type || "—")}${fact("Confidence", annotation.confidence == null ? "—" : `${Math.round(annotation.confidence * 100)}%`)}${fact("Review", latestReview ? reviewActionLabel(latestReview.action) : "Not reviewed")}</div>
+        ${annotation.confidence_reason ? fieldDetail("Confidence reason", annotation.confidence_reason) : ""}
+        ${annotation.synonyms?.length ? fieldDetail("Synonyms", annotation.synonyms.join(" · ")) : ""}
+        ${annotation.warnings?.length ? fieldDetail("Warnings", annotation.warnings.join(" · "), "warning") : ""}
+        ${fieldEvidence(annotation.evidence || [])}
+        <div class="field-provenance"><strong>Provenance</strong><span>${escapeHtml(provenance?.source || "unknown")}${provenance?.provider ? ` · ${escapeHtml(provenance.provider)}` : ""}${provenance?.model ? ` · ${escapeHtml(provenance.model)}` : ""}</span></div>
+        ${latestReview ? fieldDetail(`Human review · ${reviewActionLabel(latestReview.action)}`, latestReview.reason) : ""}
+        ${contextDocuments.length ? fieldDetail("Context documents", contextDocuments.map(item => `${item.id}@${item.revision}`).join(" · ")) : ""}` : '<p class="field-missing">No TAREL field annotation yet.</p>'}
+      ${sourceSemantics.length ? `<div class="field-source-semantics"><strong>Imported source semantics</strong><div>${sourceSemantics.map(entry => `<span class="source-pill" title="${escapeAttr(entry.import_name)}">${escapeHtml(entry.name)}</span>`).join(" ")}</div></div>` : ""}
+    </div>
+  </details>`;
+}
+
+function fieldDetail(label, value, kind = "") {
+  return `<div class="field-detail${kind ? ` ${escapeAttr(kind)}` : ""}"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></div>`;
+}
+
+function fieldEvidence(evidence) {
+  if (!evidence.length) return "";
+  return `<div class="field-evidence"><strong>Evidence · ${evidence.length}</strong>${evidence.map(item => `<article><span>${escapeHtml(item.source)}</span><code>${escapeHtml(item.reference)}</code>${item.reason ? `<small>${escapeHtml(item.reason)}</small>` : ""}${item.value ? `<small>${escapeHtml(item.value)}</small>` : ""}</article>`).join("")}</div>`;
 }
 
 function semanticImportStrip() {
@@ -830,6 +866,7 @@ function knowledgeRevisionState(item, used, available) {
 }
 function shellArg(value) { return `'${String(value).replaceAll("'", "'\\''")}'`; }
 function stateLabel(value) { return ({draft: "Draft", review_required: "Review required", deferred: "Deferred", validated: "Approved", rejected: "Removed", missing: "Missing"})[value] || value; }
+function reviewActionLabel(value) { return ({validate: "Approved", reject: "Removed", defer: "Deferred", edit: "Edited"})[value] || value; }
 function lines(value) { return String(value || "").split("\n").map(item => item.trim()).filter(Boolean); }
 function emptyToNull(value) { const clean = String(value || "").trim(); return clean || null; }
 function changed(record, patch) { const a = record.annotation; return patch.description !== a.description || patch.role !== (a.role || null) || patch.grain !== (record.grain || null) || JSON.stringify(patch.synonyms) !== JSON.stringify(a.synonyms || []) || JSON.stringify(patch.warnings) !== JSON.stringify(a.warnings || []); }

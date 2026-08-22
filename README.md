@@ -90,6 +90,12 @@ Lineage keeps different evidence separate:
 - read/write claims describe **where data flows**;
 - review state describes **how much the claim is trusted**.
 
+Sanitized runtime SQL, MongoDB, and federated DuckDB attempts use a separate create-only contract. They
+retain ordered call identity, exact graph bindings and explicit result dependencies, status, row
+count, schema, and hashes without persisting query text, parameters, raw rows, connection details,
+or free-form database errors. See
+[Runtime lineage](docs/runtime-lineage.md).
+
 The text, JSON, SDK, and browser trace also expose the evidence attached to each hop. Importers can
 therefore retain compact DAX expressions, compiled SQL, or exact manifest bindings instead of
 reducing a report-to-source path to unexplained arrows.
@@ -102,10 +108,12 @@ Generated semantics are proposals, not truth. The local browser guides reviewers
 meaning first while keeping field-level suggestions, evidence, provider provenance, warnings, and
 confidence available.
 
-![TAREL annotation review](https://raw.githubusercontent.com/mpsgitai/tarel/master/docs/assets/annotation-review.png)
+![TAREL field annotation inspector](https://raw.githubusercontent.com/mpsgitai/tarel/master/docs/assets/tarel-field-annotation-inspector.png)
 
-*Review, edit, approve, defer, or reject semantic proposals without sending the graph to a hosted
-UI. The browser makes no external requests.*
+*Expand every field to inspect its description, semantic role and type, confidence reason,
+synonyms, evidence, review state, and provider provenance. Review, edit, approve, defer, or reject
+semantic proposals without sending the graph to a hosted UI. The browser makes no external
+requests.*
 
 Existing Markdown or text documentation can be attached as optional annotation context at global,
 system, graph, schema, or object scope. TAREL resolves a deterministic, bounded set for each object;
@@ -240,7 +248,7 @@ optional local semantic index after annotation or review changes:
 
 ```bash
 tarel model download
-tarel index build retail-demo
+tarel index build retail-demo --resume
 
 tarel context retail-demo \
   "returns by product and sales channel" \
@@ -251,9 +259,13 @@ tarel context retail-demo \
 
 The pinned Qwen3-Embedding-0.6B GGUF runs in-process on the CPU. TAREL does not add Torch,
 SentenceTransformers, a vector database, an API server, or a local generation model. Indexes contain
-only allowlisted graph metadata and are explicitly rebuildable.
-Index construction reports embedding batches and the final persistence phase, so a larger local
-schema never looks stalled while the CPU model is working.
+only allowlisted graph metadata and are explicitly rebuildable. With `--resume`, completed
+embedding batches survive an interruption and are reused only when the graph, retrieval-document
+projection, and model still match exactly. The previous complete index stays readable until its
+replacement is ready.
+Index construction reports document batches and the final persistence phase, so a larger local
+schema never looks stalled while the CPU model is working. llama.cpp decodes each document
+independently; `--batch-size` controls scheduling and progress rather than token capacity.
 
 Context packets are deterministic and budgeted. They report selected objects, fields, joins,
 expansion paths, retrieval reasons, warnings, review state, hashes, and every omission. Stable facts
@@ -298,11 +310,11 @@ activates the package explicitly.
 |---|---|
 | `tarel source` | Manage logical sources; probe, discover, build, refresh, and enrich by policy |
 | `tarel connector` | Inspect, profile, sample, and scaffold read-only adapters |
-| `tarel graph` | Build, refresh, inspect, and batch-annotate graphs |
+| `tarel graph` | Build, import, refresh, inspect, and batch-annotate graphs |
 | `tarel annotation` | Plan, apply, edit, and review semantic proposals |
 | `tarel knowledge` | Attach bounded Markdown/TXT context to annotation scopes |
 | `tarel relationship` | Add, discover, probe, and review joins |
-| `tarel lineage` | Build, analyze, review, find, and trace lineage |
+| `tarel lineage` | Trace static lineage; import sanitized SQL/MongoDB/DuckDB runtime attempts |
 | `tarel focus` | Save report- or cube-centred upstream slices |
 | `tarel workspace` | Organize systems, areas, schemas, zones, and cross-graph joins |
 | `tarel search` | Run lexical, BM25, vector, or hybrid retrieval |

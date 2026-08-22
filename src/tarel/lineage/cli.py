@@ -16,17 +16,22 @@ from tarel.lineage.application import (
     build_lineage_use_case,
     decide_lineage_item_use_case,
     find_lineage_references_use_case,
+    import_runtime_lineage_use_case,
     lineage_status_use_case,
     list_lineage_items_use_case,
+    list_runtime_lineages_use_case,
     load_lineage_use_case,
+    load_runtime_lineage_use_case,
     next_lineage_task_use_case,
     process_lineage_view_use_case,
     run_lineage_provider_use_case,
     table_lineage_view_use_case,
+    trace_runtime_lineage_use_case,
     trace_upstream_use_case,
 )
 from tarel.lineage.contracts import LineageFailure
 from tarel.lineage.revision import lineage_revision
+from tarel.lineage.runtime import load_runtime_lineage_input
 from tarel.lineage.status import lineage_status
 
 
@@ -56,6 +61,35 @@ def add_lineage_commands(subcommands: argparse._SubParsersAction[argparse.Argume
         default="document",
     )
     _format(show)
+
+    import_runtime = commands.add_parser(
+        "import-runtime",
+        help="Import one immutable, sanitized runtime query run.",
+    )
+    import_runtime.add_argument("name", help="New local runtime-lineage name.")
+    import_runtime.add_argument("--source", required=True, type=Path)
+    _format(import_runtime)
+
+    show_runtime = commands.add_parser(
+        "show-runtime",
+        help="Show one sanitized runtime-lineage run.",
+    )
+    show_runtime.add_argument("name")
+    _format(show_runtime)
+
+    list_runtime = commands.add_parser(
+        "list-runtime",
+        help="List sanitized runtime-lineage runs.",
+    )
+    _format(list_runtime)
+
+    trace_runtime = commands.add_parser(
+        "trace-runtime",
+        help="Trace a successful runtime call to its graph-bound source inputs.",
+    )
+    trace_runtime.add_argument("name")
+    trace_runtime.add_argument("call_id")
+    _format(trace_runtime)
 
     next_task = commands.add_parser(
         "next",
@@ -208,6 +242,40 @@ def dispatch_lineage(args: argparse.Namespace) -> int | None:
         else:
             payload = lineage_status_use_case(args.name).to_dict()
         _render_view(payload, args.view, output_format=args.format)
+        return 0
+    if command == "import-runtime":
+        result = import_runtime_lineage_use_case(
+            args.name,
+            load_runtime_lineage_input(args.source),
+        )
+        _render_runtime(
+            {"path": str(result.path), "runtime_lineage": result.document.to_dict()},
+            output_format=args.format,
+        )
+        return 0
+    if command == "show-runtime":
+        _render_runtime(
+            {"runtime_lineage": load_runtime_lineage_use_case(args.name).to_dict()},
+            output_format=args.format,
+        )
+        return 0
+    if command == "list-runtime":
+        payload = {"runtime_lineages": list(list_runtime_lineages_use_case())}
+        if args.format == "json":
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            for name in payload["runtime_lineages"]:
+                print(name)
+        return 0
+    if command == "trace-runtime":
+        payload = trace_runtime_lineage_use_case(args.name, args.call_id).to_dict()
+        if args.format == "json":
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            print(f"Runtime lineage: {payload['runtime_lineage']}")
+            print(f"Start call: {payload['start_call_id']}")
+            for origin in payload["origins"]:
+                print(f"- {origin['reference']} [{origin['kind']}]")
         return 0
     if command == "next":
         task = next_lineage_task_use_case(args.name, source_path=args.source)
@@ -425,6 +493,22 @@ def _render_document_change(payload: dict[str, object], *, output_format: str) -
         )
         print(f"Change report: {payload['change_report_path']}")
     print(f"Path: {payload['path']}")
+
+
+def _render_runtime(payload: dict[str, object], *, output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    document = payload.get("runtime_lineage")
+    if not isinstance(document, dict):
+        return
+    graph = document["graph"]
+    print(f"Runtime lineage: {document['name']}")
+    print(f"Run: {document['run_id']}")
+    print(f"Graph: {graph['name']}@{graph['revision']}")
+    print(f"Runtime events: {len(document['events'])}")
+    if payload.get("path") is not None:
+        print(f"Path: {payload['path']}")
 
 
 def _render_view(payload: object, view: str, *, output_format: str) -> None:

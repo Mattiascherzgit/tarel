@@ -18,6 +18,40 @@ The path is the `.tarel` state directory itself. Constructing the client perform
 network request, model download, database connection, or write. Separate clients can safely point
 at separate roots without changing the process working directory.
 
+## Import a caller-observed catalog
+
+An embedding application that already owns a connector-compatible `CatalogResult` can persist its
+technical graph without opening the source or running discovery again:
+
+```python
+from tarel.connectors.contracts import CatalogResult
+from tarel.sdk import Tarel
+
+tarel = Tarel("/srv/bi-agent/.tarel")
+catalog: CatalogResult = observe_catalog_in_the_host_application()
+result = tarel.graph.import_catalog("observed-warehouse", catalog)
+```
+
+The SDK and CLI call the same application use case and atomic graph store. This first import
+boundary is intentionally create-only: if the graph name already exists, TAREL raises
+`graph_exists` and leaves the stored graph unchanged. Connector-backed refresh remains available
+through `tarel.graph.refresh(...)`; revision-aware refresh of caller-observed catalogs is not yet
+part of this API.
+
+The CLI accepts the strict JSON shape emitted by `CatalogResult.to_dict()` and by connector
+discovery:
+
+```bash
+tarel connector discover sqlite --config .tarel/connectors/retail.toml \
+  --format json > observed-catalog.json
+tarel graph import-catalog observed-warehouse \
+  --source observed-catalog.json
+```
+
+Malformed objects, unknown fields, duplicate objects or fields, invalid primary keys, and dangling
+foreign-key references fail before graph persistence. Catalog input contains technical metadata;
+it must not contain credentials, connection URLs, samples, or query results.
+
 ## Configure a logical source
 
 The optional local source registry binds a stable name to a reviewed connector and a private config
@@ -352,6 +386,28 @@ an origin; a zone is an exploration filter, not an authorization boundary.
 documents and use an exact reference returned by the corresponding `find` method when the starting
 identifier is not already known.
 
+### Import observed runtime query lineage
+
+Runtime query evidence uses a separate experimental contract rather than pretending an execution
+attempt is a reusable workflow definition:
+
+```python
+from tarel.lineage.runtime import RuntimeLineageInput
+
+observed = RuntimeLineageInput.from_dict(sanitized_runtime_payload)
+result = tarel.lineage.import_runtime("agent-run-001", observed)
+loaded = tarel.lineage.load_runtime("agent-run-001")
+trace = tarel.lineage.trace_runtime("agent-run-001", "accepted-duckdb-call")
+```
+
+The payload is bound to an exact graph revision and declares read-only SQL `select` or MongoDB
+`find`/`aggregate` operations. It contains statement or request hashes, result hashes, graph node
+IDs, row counts, column names, statuses, safe error codes, and explicit DuckDB dependencies on
+earlier successful calls. It cannot contain SQL text, MongoDB filters or pipelines, parameters,
+documents, raw rows, connection URLs, credentials, or free-form database errors. Imports are
+create-only. `lineage.list_runtime()` lists these immutable run documents. See
+[Runtime lineage](runtime-lineage.md) for the current SQL/MongoDB/DuckDB boundary.
+
 ### Feed a Space/Lineage GUI
 
 One projection contains both canvas modes, so changing the mode is local UI state and never causes
@@ -373,9 +429,10 @@ available_modes = view["view_modes"]  # ["space", "lineage"]
 
 The built-in browser consumes this same combined projection: **Space** groups the scoped objects
 by system, area, graph, and schema; **Lineage** reuses those objects and adds the explicitly
-selected jobs, reads, writes, and process edges. `tarel.view.graph(...)` provides the same contract
-for one graph. A custom GUI owns only the selected mode, layout, and interaction state—not graph or
-lineage resolution.
+selected jobs, reads, writes, and process edges. Field rows in the object inspector expand to show
+their complete TAREL annotation, confidence reasoning, evidence, provenance, review, and bounded
+knowledge references. `tarel.view.graph(...)` provides the same contract for one graph. A custom
+GUI owns only the selected mode, layout, and interaction state—not graph or lineage resolution.
 
 Human knowledge that is unavailable from an exporter can be kept in a separate manual overlay:
 
@@ -424,6 +481,27 @@ tarel.annotation.decide(
 Provider-backed batch annotation uses the same configured provider profiles as the CLI through
 `tarel.annotation.run(...)`. Provider credentials remain in the existing private profile or
 environment boundary; they are not stored in the SDK client.
+
+An embedding application may pass samples that it has already authorized and bounded, keyed by the
+stable table or view node ID:
+
+```python
+from tarel.connectors.contracts import SampleResult
+
+samples: dict[str, SampleResult] = observe_bounded_samples()
+result = tarel.annotation.run(
+    "warehouse",
+    provider="openrouter",
+    samples_by_target=samples,
+)
+```
+
+Each sample must match its target namespace, object name, and complete selected/omitted field set,
+and may contain at most ten rows. The sample's connector and catalog remain provenance supplied by
+the caller and may differ for objects in a composite graph. `samples_by_target` and connector-backed
+`sample_limit` are mutually exclusive. Samples are input-only: TAREL checks that the provider never
+echoes an observed value and persists neither the rows nor their values in the graph, retrieval
+index, context packet, or annotation evidence.
 
 ## Context lifecycle and local embeddings
 
@@ -488,10 +566,14 @@ status = tarel.model.status()
 if not status["exists"]:
     tarel.model.download()
 
-tarel.index.build("warehouse")
+result = tarel.index.build("warehouse", resume=True)
+print(result.resumed_documents)
 ```
 
-Constructing `Tarel` never downloads the model.
+`resume=True` uses the same checkpoint contract as CLI `index build --resume`. The checkpoint is
+accepted only for the exact graph content, allowlisted retrieval documents, model ID, and model
+SHA-256. `tarel.index.status("warehouse")` exposes partial checkpoint coverage. Constructing `Tarel`
+never downloads the model.
 
 ## Current surface
 
@@ -500,14 +582,13 @@ Constructing `Tarel` never downloads the model.
 - `tarel.search`: graph and workspace retrieval
 - `tarel.context`: retrieval snippets, graph/workspace cache prefixes, stable/dynamic splitting,
   packet diff and refresh impact
-- `tarel.lineage`: list, load, build, coding-agent tasks, provider analysis, find, upstream,
-  projections, manual overlays and review
+- `tarel.lineage`: static lineage plus create-only observed SQL/MongoDB/DuckDB runtime imports
 - `tarel.view`: one combined graph/workspace projection for Space and Lineage canvases
 - `tarel.focus`: list, load, build
 - `tarel.annotation`: plan, apply, inspect, edit, decide and provider batch
 - `tarel.relationship`: add, probe, discover, list and review graph-local joins
 - `tarel.model`: inspect and explicitly download the optional local embedding model
-- `tarel.index`: build and inspect the optional local vector index
+- `tarel.index`: build, resume and inspect the optional local vector index
 
 This first SDK surface is local and file-first. Reads can be concurrent. Mutating the same graph,
 lineage, focus, or workspace from multiple processes is not yet a coordinated multi-writer mode;

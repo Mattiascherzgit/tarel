@@ -146,11 +146,26 @@ main { min-height: 0; }
 .fact small, .fact strong { display: block; }
 .fact small { color: var(--subtle); font-size: 9px; text-transform: uppercase; }
 .fact strong { margin-top: 3px; font-size: 11px; word-break: break-word; }
-.fields-table { width: 100%; border-collapse: collapse; font-size: 10px; }
-.fields-table th, .fields-table td { padding: 6px 5px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-.fields-table th { position: sticky; top: 0; background: var(--surface); color: var(--subtle); font-weight: 500; }
 .semantic-pill { display: inline-block; padding: 2px 5px; background: rgb(99 102 241 / 13%); color: var(--indigo-bright); border-radius: 3px; }
 .source-pill { display: inline-block; margin: 1px 0; padding: 2px 5px; background: rgb(16 185 129 / 13%); color: #6ee7b7; border: 1px solid rgb(16 185 129 / 20%); border-radius: 3px; }
+.field-list { display: grid; gap: 6px; }
+.field-card { border: 1px solid var(--line); border-radius: 4px; background: var(--black); }
+.field-card > summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px; cursor: pointer; list-style-position: inside; }
+.field-card[open] > summary { border-bottom: 1px solid var(--line); background: var(--surface-low); }
+.field-summary-copy { min-width: 0; flex: 1; }
+.field-summary-copy strong, .field-summary-copy small { display: block; overflow-wrap: anywhere; }
+.field-summary-copy small { margin-top: 2px; color: var(--subtle); }
+.field-summary-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
+.field-annotation-body { display: grid; gap: 10px; padding: 10px; }
+.field-missing { color: var(--subtle); }
+.field-detail, .field-provenance, .field-source-semantics { display: grid; gap: 3px; color: var(--muted); line-height: 1.45; }
+.field-detail strong, .field-provenance strong, .field-source-semantics strong, .field-evidence > strong { color: var(--subtle); font-size: 9px; text-transform: uppercase; }
+.field-detail.warning { padding-left: 8px; border-left: 2px solid var(--amber); color: #fcd34d; }
+.field-evidence { display: grid; gap: 5px; }
+.field-evidence article { display: grid; gap: 3px; padding: 7px; border: 1px solid var(--line); background: var(--surface-low); }
+.field-evidence article span { color: var(--indigo-bright); }
+.field-evidence article code { color: #cccbd2; overflow-wrap: anywhere; }
+.field-evidence article small { color: var(--subtle); }
 .semantic-origin { display: block; margin-top: 6px; color: var(--subtle); line-height: 1.45; }
 .tarel-semantics { border-left: 2px solid var(--indigo-bright); padding-left: 10px; }
 .source-semantics { border-left: 2px solid #34d399; padding-left: 10px; }

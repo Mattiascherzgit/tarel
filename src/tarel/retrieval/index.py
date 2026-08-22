@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -47,21 +48,47 @@ class FileRetrievalIndex:
         embedder: EmbeddingBackend,
         model_path: Path,
         batch_size: int = 16,
+        resume: bool = False,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> IndexBuildResult:
+        if not 1 <= batch_size <= 256:
+            raise RetrievalFailure("invalid_batch_size", "Batch size must be between 1 and 256.")
         documents = build_retrieval_documents(graph)
         total = len(documents)
-        if progress is not None:
-            progress(0, total, "embedding")
-        vector_batches = []
-        for start in range(0, total, batch_size):
-            batch = documents[start : start + batch_size]
-            vector_batches.extend(
-                embedder.embed_documents(
-                    tuple(document.text for document in batch),
-                    batch_size=batch_size,
+        model_sha256 = sha256_file(model_path)
+        checkpoint = self.checkpoint_path(graph.name)
+        resumed_documents = 0
+        vector_batches: list[tuple[float, ...]] = []
+        if resume:
+            vector_batches = list(
+                _load_index_checkpoint(
+                    checkpoint,
+                    graph=graph,
+                    documents=documents,
+                    model_id=embedder.model_id,
+                    model_sha256=model_sha256,
                 )
             )
+            resumed_documents = len(vector_batches)
+            if progress is not None:
+                progress(resumed_documents, total, "resuming")
+        elif progress is not None:
+            progress(0, total, "embedding")
+        for start in range(resumed_documents, total, batch_size):
+            batch = documents[start : start + batch_size]
+            batch_vectors = embedder.embed_documents(
+                tuple(document.text for document in batch),
+                batch_size=batch_size,
+            )
+            _validate_vector_batch(batch_vectors, existing=tuple(vector_batches))
+            vector_batches.extend(batch_vectors)
+            if resume:
+                _save_index_checkpoint_batch(
+                    checkpoint,
+                    start=start,
+                    documents=batch,
+                    vectors=batch_vectors,
+                )
             if progress is not None:
                 progress(min(start + len(batch), total), total, "embedding")
         vectors = tuple(vector_batches)
@@ -74,7 +101,7 @@ class FileRetrievalIndex:
             dimensions=dimensions,
             model_id=embedder.model_id,
             model_path=str(model_path.resolve()),
-            model_sha256=sha256_file(model_path),
+            model_sha256=model_sha256,
             normalized=True,
         )
         path = self.path(graph.name)
@@ -121,6 +148,7 @@ class FileRetrievalIndex:
                 )
                 connection.commit()
             os.replace(temporary_path, path)
+            checkpoint.unlink(missing_ok=True)
             if progress is not None:
                 progress(total, total, "ready")
         except (OSError, sqlite3.Error) as exc:
@@ -129,7 +157,11 @@ class FileRetrievalIndex:
                 "index_build_failed",
                 "Could not persist retrieval index.",
             ) from exc
-        return IndexBuildResult(path=path, metadata=metadata)
+        return IndexBuildResult(
+            path=path,
+            metadata=metadata,
+            resumed_documents=resumed_documents,
+        )
 
     def metadata(self, name: str) -> IndexMetadata:
         path = self.path(name)
@@ -205,6 +237,56 @@ class FileRetrievalIndex:
         if not _GRAPH_NAME.fullmatch(name):
             raise RetrievalFailure("invalid_graph_name", "Invalid graph name for retrieval index.")
         return self.root / name / "index.sqlite"
+
+    def checkpoint_path(self, name: str) -> Path:
+        self.path(name)
+        return self.root / name / "index.checkpoint.sqlite"
+
+    def checkpoint_status(self, name: str) -> dict[str, object] | None:
+        path = self.checkpoint_path(name)
+        if not path.is_file():
+            return None
+        try:
+            with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+                identity = {
+                    str(key): json.loads(value)
+                    for key, value in connection.execute("SELECT key, value FROM metadata")
+                }
+                completed = int(connection.execute("SELECT COUNT(*) FROM vectors").fetchone()[0])
+        except (OSError, sqlite3.Error, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise RetrievalFailure(
+                "invalid_index_checkpoint",
+                f"Could not read retrieval index checkpoint: {name}",
+            ) from exc
+        required = {
+            "checkpoint_version",
+            "document_count",
+            "documents_sha256",
+            "graph",
+            "graph_hash",
+            "model_id",
+            "model_sha256",
+        }
+        document_count = identity.get("document_count")
+        if (
+            set(identity) != required
+            or not isinstance(document_count, int)
+            or not 0 <= completed <= document_count
+        ):
+            raise RetrievalFailure(
+                "invalid_index_checkpoint",
+                f"Retrieval index checkpoint metadata is invalid: {name}",
+            )
+        return {
+            "completed_documents": completed,
+            "contract_version": identity["checkpoint_version"],
+            "document_count": document_count,
+            "graph": identity["graph"],
+            "graph_hash": identity["graph_hash"],
+            "model_id": identity["model_id"],
+            "model_sha256": identity["model_sha256"],
+            "path": str(path),
+        }
 
 
 def search_retrieval(
@@ -373,6 +455,156 @@ def _object_results(
     )
 
 
+def _load_index_checkpoint(
+    path: Path,
+    *,
+    graph: GraphDocument,
+    documents: tuple[RetrievalDocument, ...],
+    model_id: str,
+    model_sha256: str,
+) -> tuple[tuple[float, ...], ...]:
+    identity = _checkpoint_identity(
+        graph,
+        documents,
+        model_id=model_id,
+        model_sha256=model_sha256,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        descriptor, temporary_name = tempfile.mkstemp(
+            dir=path.parent,
+            prefix=".index-checkpoint-",
+            suffix=".sqlite",
+        )
+        os.close(descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            with sqlite3.connect(temporary_path) as connection:
+                _create_checkpoint_schema(connection)
+                connection.executemany(
+                    "INSERT INTO metadata(key, value) VALUES (?, ?)",
+                    ((key, json.dumps(value)) for key, value in identity.items()),
+                )
+                connection.commit()
+            os.replace(temporary_path, path)
+        except (OSError, sqlite3.Error) as exc:
+            temporary_path.unlink(missing_ok=True)
+            raise RetrievalFailure(
+                "index_checkpoint_failed",
+                "Could not create retrieval index checkpoint.",
+            ) from exc
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+            stored_identity = {
+                str(key): json.loads(value)
+                for key, value in connection.execute("SELECT key, value FROM metadata")
+            }
+            rows = connection.execute(
+                "SELECT position, document_id, dimensions, value "
+                "FROM vectors ORDER BY position"
+            ).fetchall()
+    except (OSError, sqlite3.Error, json.JSONDecodeError) as exc:
+        raise RetrievalFailure(
+            "invalid_index_checkpoint",
+            "Could not read retrieval index checkpoint.",
+        ) from exc
+    if stored_identity != identity:
+        raise RetrievalFailure(
+            "stale_index_checkpoint",
+            "The retrieval index checkpoint belongs to different graph documents or model. "
+            "Run index build without --resume to rebuild and clear it.",
+        )
+    vectors: list[tuple[float, ...]] = []
+    for expected_position, row in enumerate(rows):
+        position, document_id, dimensions, value = row
+        if (
+            position != expected_position
+            or expected_position >= len(documents)
+            or document_id != documents[expected_position].id
+        ):
+            raise RetrievalFailure(
+                "invalid_index_checkpoint",
+                "Retrieval index checkpoint coverage is not a contiguous document prefix.",
+            )
+        vectors.append(_unpack_vector(value, dimensions))
+    if vectors:
+        _validate_vectors(tuple(vectors), expected_count=len(vectors))
+    return tuple(vectors)
+
+
+def _save_index_checkpoint_batch(
+    path: Path,
+    *,
+    start: int,
+    documents: tuple[RetrievalDocument, ...],
+    vectors: tuple[tuple[float, ...], ...],
+) -> None:
+    try:
+        with sqlite3.connect(path) as connection:
+            connection.executemany(
+                "INSERT INTO vectors(position, document_id, dimensions, value) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    (start + offset, document.id, len(vector), _pack_vector(vector))
+                    for offset, (document, vector) in enumerate(
+                        zip(documents, vectors, strict=True)
+                    )
+                ),
+            )
+            connection.commit()
+    except (OSError, sqlite3.Error) as exc:
+        raise RetrievalFailure(
+            "index_checkpoint_failed",
+            "Could not persist retrieval index checkpoint.",
+        ) from exc
+
+
+def _checkpoint_identity(
+    graph: GraphDocument,
+    documents: tuple[RetrievalDocument, ...],
+    *,
+    model_id: str,
+    model_sha256: str,
+) -> dict[str, object]:
+    payload = json.dumps(
+        [
+            [
+                document.id,
+                document.object_id,
+                document.field_id,
+                document.namespace,
+                document.label,
+                document.text,
+            ]
+            for document in documents
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return {
+        "checkpoint_version": "tarel.retrieval-checkpoint.v0.1",
+        "document_count": len(documents),
+        "documents_sha256": hashlib.sha256(payload).hexdigest(),
+        "graph": graph.name,
+        "graph_hash": graph_revision(graph),
+        "model_id": model_id,
+        "model_sha256": model_sha256,
+    }
+
+
+def _validate_vector_batch(
+    vectors: tuple[tuple[float, ...], ...],
+    *,
+    existing: tuple[tuple[float, ...], ...],
+) -> None:
+    dimensions = _validate_vectors(vectors, expected_count=len(vectors))
+    if existing and dimensions != len(existing[0]):
+        raise RetrievalFailure(
+            "embedding_failed",
+            "Embedding dimensions changed while resuming the index.",
+        )
+
+
 def _create_schema(connection: sqlite3.Connection) -> None:
     connection.executescript(
         """
@@ -390,6 +622,23 @@ def _create_schema(connection: sqlite3.Connection) -> None:
         );
         CREATE TABLE vectors (
             document_id TEXT PRIMARY KEY REFERENCES documents(id),
+            dimensions INTEGER NOT NULL,
+            value BLOB NOT NULL
+        );
+        """
+    )
+
+
+def _create_checkpoint_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript(
+        """
+        CREATE TABLE metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+        CREATE TABLE vectors (
+            position INTEGER PRIMARY KEY,
+            document_id TEXT NOT NULL UNIQUE,
             dimensions INTEGER NOT NULL,
             value BLOB NOT NULL
         );

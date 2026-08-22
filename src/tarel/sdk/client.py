@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -45,6 +45,7 @@ from tarel.application import (
     download_embedding_model_use_case,
     edit_annotation_use_case,
     embedding_model_status_use_case,
+    import_catalog_use_case,
     list_annotation_reviews_use_case,
     list_focuses_use_case,
     list_graphs_use_case,
@@ -67,7 +68,12 @@ from tarel.application import (
     show_annotation_use_case,
     show_workspace_zone_use_case,
 )
-from tarel.connectors.contracts import CatalogResult, ProbeResult, RelationshipPairProfile
+from tarel.connectors.contracts import (
+    CatalogResult,
+    ProbeResult,
+    RelationshipPairProfile,
+    SampleResult,
+)
 from tarel.context import ContextResult
 from tarel.context_caching import ContextCacheParts, split_context_packet
 from tarel.context_output import DEFAULT_MAX_CONTEXT_CHARACTERS
@@ -91,25 +97,35 @@ from tarel.lineage.application import (
     LineageReviewResult,
     ManualHopResult,
     ManualJobResult,
+    RuntimeLineageImportResult,
     add_manual_hop_use_case,
     add_manual_job_use_case,
     apply_lineage_proposal_use_case,
     build_lineage_use_case,
     decide_lineage_item_use_case,
     find_lineage_references_use_case,
+    import_runtime_lineage_use_case,
     lineage_status_use_case,
     list_lineage_items_use_case,
     list_lineages_use_case,
+    list_runtime_lineages_use_case,
     load_lineage_use_case,
+    load_runtime_lineage_use_case,
     next_lineage_task_use_case,
     process_lineage_view_use_case,
     run_lineage_provider_use_case,
     table_lineage_view_use_case,
+    trace_runtime_lineage_use_case,
     trace_upstream_use_case,
 )
 from tarel.lineage.contracts import LineageDocument
 from tarel.lineage.core import ProcessStep, TableLineage
 from tarel.lineage.review import LineageReviewItem
+from tarel.lineage.runtime import (
+    RuntimeLineageDocument,
+    RuntimeLineageInput,
+    RuntimeLineageTrace,
+)
 from tarel.lineage.status import LineageStatus
 from tarel.lineage.tasks import LineageTask
 from tarel.lineage.traversal import LineageReference, UpstreamTrace
@@ -208,6 +224,10 @@ class GraphAPI(_RuntimeAPI):
 
     def load(self, name: str) -> GraphDocument:
         return load_graph_use_case(name, runtime=self._runtime)
+
+    def import_catalog(self, name: str, catalog: CatalogResult) -> GraphBuildResult:
+        """Persist one already observed catalog without running discovery again."""
+        return import_catalog_use_case(name, catalog, runtime=self._runtime)
 
     def build(
         self,
@@ -1011,6 +1031,30 @@ class LineageAPI(_RuntimeAPI):
             runtime=self._runtime,
         )
 
+    def import_runtime(
+        self,
+        name: str,
+        observed: RuntimeLineageInput,
+    ) -> RuntimeLineageImportResult:
+        return import_runtime_lineage_use_case(
+            name,
+            observed,
+            runtime=self._runtime,
+        )
+
+    def load_runtime(self, name: str) -> RuntimeLineageDocument:
+        return load_runtime_lineage_use_case(name, runtime=self._runtime)
+
+    def list_runtime(self) -> tuple[str, ...]:
+        return list_runtime_lineages_use_case(runtime=self._runtime)
+
+    def trace_runtime(self, name: str, call_id: str) -> RuntimeLineageTrace:
+        return trace_runtime_lineage_use_case(
+            name,
+            call_id,
+            runtime=self._runtime,
+        )
+
     def add_job(
         self,
         name: str,
@@ -1521,6 +1565,7 @@ class AnnotationAPI(_RuntimeAPI):
         model: str | None = None,
         timeout: float = 120.0,
         sample_limit: int = 0,
+        samples_by_target: Mapping[str, SampleResult] | None = None,
         profile_row_limit: int = 0,
         include_small_domain_values: bool = False,
         config: str | Path | None = None,
@@ -1545,6 +1590,7 @@ class AnnotationAPI(_RuntimeAPI):
             model=model,
             timeout=timeout,
             sample_limit=sample_limit,
+            samples_by_target=samples_by_target,
             profile_row_limit=profile_row_limit,
             include_small_domain_values=include_small_domain_values,
             config_path=_optional_path(config),
@@ -1732,6 +1778,7 @@ class IndexAPI(_RuntimeAPI):
         model_path: str | Path | None = None,
         batch_size: int = 16,
         n_threads: int | None = None,
+        resume: bool = False,
         progress: Callable[[int, int, str], None] | None = None,
     ) -> IndexBuildResult:
         return build_retrieval_index_use_case(
@@ -1739,6 +1786,7 @@ class IndexAPI(_RuntimeAPI):
             model_path=_optional_path(model_path),
             batch_size=batch_size,
             n_threads=n_threads,
+            resume=resume,
             progress=progress,
             runtime=self._runtime,
         )

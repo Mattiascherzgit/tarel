@@ -79,7 +79,35 @@ class UIPresentationTests(TestCase):
         fact = next(item for item in payload["objects"] if item["label"] == "mart.FactSales")
         self.assertEqual([item["label"] for item in fact["fields"]], ["DateKey", "SalesAmount"])
         self.assertEqual(fact["annotation"]["description"], "Sales by transaction line.")
+        field_annotation = fact["fields"][0]["annotation"]
+        self.assertEqual(field_annotation["description"], "Meaning of DateKey.")
+        self.assertEqual(field_annotation["confidence"], 0.9)
+        self.assertEqual(
+            field_annotation["confidence_reason"],
+            "Names and schema structure are explicit.",
+        )
+        self.assertEqual(field_annotation["evidence"][0]["source"], "object_name")
+        self.assertEqual(field_annotation["provenance"]["source"], "agent")
+        self.assertEqual(field_annotation["synonyms"], [])
+        self.assertEqual(field_annotation["warnings"], [])
         self.assertEqual(len(payload["edges"]), 1)
+
+    def test_browser_assets_render_expandable_complete_field_annotations(self) -> None:
+        static = Path(__file__).parents[1] / "src/tarel/ui/static"
+        application = (static / "app.js").read_text(encoding="utf-8")
+        styles = (static / "styles.css").read_text(encoding="utf-8")
+
+        for marker in (
+            "fieldAnnotationCard",
+            "Confidence reason",
+            "Human review",
+            "Context documents",
+            "fieldEvidence",
+            "Imported source semantics",
+        ):
+            self.assertIn(marker, application)
+        self.assertIn(".field-card", styles)
+        self.assertIn(".field-evidence", styles)
 
     def test_cli_reports_an_invalid_ui_port_without_a_traceback(self) -> None:
         errors = StringIO()
