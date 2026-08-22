@@ -32,20 +32,28 @@ class RuntimeLineageTests(TestCase):
             self.assertEqual(imported.document, loaded)
             self.assertEqual(sdk.lineage.list_runtime(), ("run-001",))
             self.assertEqual(loaded.events[0].inputs[0].reference, "SalesDW.dbo.Orders")
+            self.assertEqual(loaded.events[0].dialect, "sqlite")
             self.assertEqual(
                 loaded.events[0].inputs[1].reference,
                 "SalesDW.dbo.Orders.OrderId",
             )
             self.assertEqual(loaded.events[2].operation, "aggregate")
             self.assertEqual(loaded.events[2].inputs[0].reference, "SalesDW.doc.CustomerProfiles")
+            self.assertEqual(loaded.events[1].dialect, "duckdb")
+            self.assertEqual(loaded.events[1].duration_ms, 17)
+            self.assertFalse(loaded.events[1].result.truncated)
+            self.assertEqual(loaded.events[3].dialect, "duckdb")
             self.assertEqual(loaded.events[3].status, "failed")
             self.assertEqual(loaded.events[3].error_code, "query_timeout")
+            self.assertEqual(loaded.events[3].duration_ms, 1250)
             self.assertEqual(loaded.events[4].status, "accepted")
+            self.assertEqual(loaded.events[4].to_dict()["engine"], "duckdb")
             self.assertEqual(
                 loaded.events[4].consumes,
                 ("sql-success", "sql-customers", "mongo-profiles"),
             )
             self.assertEqual(loaded.events[4].result.row_count, 4)
+            self.assertTrue(loaded.events[4].result.truncated)
             self.assertEqual(loaded.events[5].status, "failed")
             self.assertEqual(loaded.events[5].error_code, "duckdb_conversion_error")
             self.assertEqual(
@@ -60,6 +68,10 @@ class RuntimeLineageTests(TestCase):
             self.assertEqual(
                 tuple(item.source_call_id for item in trace.dependencies),
                 ("sql-success", "sql-customers", "mongo-profiles"),
+            )
+            self.assertEqual(
+                tuple(item.kind for item in trace.calls),
+                ("sql_query", "sql_query", "mongo_query", "federated_query"),
             )
             self.assertEqual(
                 {item.reference for item in trace.origins},
@@ -89,6 +101,23 @@ class RuntimeLineageTests(TestCase):
 
         self.assertEqual(raised.exception.code, "runtime_lineage_exists")
         self.assertEqual(failed_trace.exception.code, "runtime_call_not_evidence")
+
+    def test_old_runtime_payload_roundtrips_without_new_optional_fields(self) -> None:
+        payload = _observed(_graph()).to_dict()
+        for event in payload["events"]:
+            event.pop("duration_ms", None)
+            result = event.get("result")
+            if result is not None:
+                result.pop("truncated", None)
+
+        observed = RuntimeLineageInput.from_dict(payload)
+        roundtripped = observed.to_dict()
+
+        self.assertEqual(roundtripped, payload)
+        for event in roundtripped["events"]:
+            self.assertNotIn("duration_ms", event)
+            if event.get("result") is not None:
+                self.assertNotIn("truncated", event["result"])
 
     def test_cli_and_sdk_share_the_runtime_import_path(self) -> None:
         previous = Path.cwd()
@@ -246,6 +275,10 @@ class RuntimeLineageTests(TestCase):
         consumes_future["events"][4]["consumes"] = ["duckdb-failed"]
         mongo_write = _observed(graph).to_dict()
         mongo_write["events"][2]["operation"] = "update_many"
+        negative_duration = _observed(graph).to_dict()
+        negative_duration["events"][1]["duration_ms"] = -1
+        invalid_truncation = _observed(graph).to_dict()
+        invalid_truncation["events"][1]["result"]["truncated"] = "false"
 
         with TemporaryDirectory(dir=Path.cwd()) as temporary_directory:
             sdk = Tarel(Path(temporary_directory) / ".tarel")
@@ -266,6 +299,10 @@ class RuntimeLineageTests(TestCase):
                 RuntimeLineageInput.from_dict(consumes_future)
             with self.assertRaises(LineageFailure) as mongo_operation_error:
                 RuntimeLineageInput.from_dict(mongo_write)
+            with self.assertRaises(LineageFailure) as duration_error:
+                RuntimeLineageInput.from_dict(negative_duration)
+            with self.assertRaises(LineageFailure) as truncation_error:
+                RuntimeLineageInput.from_dict(invalid_truncation)
 
         self.assertEqual(stale_error.exception.code, "runtime_graph_revision_mismatch")
         self.assertEqual(duplicate_error.exception.code, "invalid_runtime_lineage")
@@ -275,6 +312,8 @@ class RuntimeLineageTests(TestCase):
         self.assertEqual(failed_dependency_error.exception.code, "invalid_runtime_lineage")
         self.assertEqual(future_dependency_error.exception.code, "invalid_runtime_lineage")
         self.assertEqual(mongo_operation_error.exception.code, "invalid_runtime_lineage")
+        self.assertEqual(duration_error.exception.code, "invalid_runtime_lineage")
+        self.assertEqual(truncation_error.exception.code, "invalid_runtime_lineage")
 
     def test_mongo_find_failure_keeps_only_safe_error_evidence(self) -> None:
         payload = _observed(_graph()).to_dict()
@@ -306,7 +345,8 @@ def _observed(graph) -> RuntimeLineageInput:
             "events": [
                 {
                     "call_id": "sql-success",
-                    "dialect": "sqlserver",
+                    "dialect": "sqlite",
+                    "duration_ms": 8,
                     "error_code": None,
                     "inputs": [order.id, order_id.id],
                     "kind": "sql_query",
@@ -315,6 +355,7 @@ def _observed(graph) -> RuntimeLineageInput:
                         "columns": ["OrderId"],
                         "row_count": 12,
                         "sha256": hashlib.sha256(b"sanitized-result").hexdigest(),
+                        "truncated": False,
                     },
                     "sequence": 1,
                     "source": "sales-reader",
@@ -323,7 +364,8 @@ def _observed(graph) -> RuntimeLineageInput:
                 },
                 {
                     "call_id": "sql-customers",
-                    "dialect": "postgresql",
+                    "dialect": "duckdb",
+                    "duration_ms": 17,
                     "error_code": None,
                     "inputs": [customer.id, customer_id.id],
                     "kind": "sql_query",
@@ -332,6 +374,7 @@ def _observed(graph) -> RuntimeLineageInput:
                         "columns": ["CustomerId"],
                         "row_count": 9,
                         "sha256": hashlib.sha256(b"customer-result").hexdigest(),
+                        "truncated": False,
                     },
                     "sequence": 2,
                     "source": "customer-reader",
@@ -356,7 +399,8 @@ def _observed(graph) -> RuntimeLineageInput:
                 },
                 {
                     "call_id": "sql-failed",
-                    "dialect": "sqlserver",
+                    "dialect": "duckdb",
+                    "duration_ms": 1250,
                     "error_code": "query_timeout",
                     "inputs": [order.id],
                     "kind": "sql_query",
@@ -378,6 +422,7 @@ def _observed(graph) -> RuntimeLineageInput:
                         "columns": ["OrderCount", "GrossAmount"],
                         "row_count": 4,
                         "sha256": hashlib.sha256(b"federated-result").hexdigest(),
+                        "truncated": True,
                     },
                     "sequence": 5,
                     "statement_sha256": hashlib.sha256(b"duckdb statement").hexdigest(),

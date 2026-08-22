@@ -320,6 +320,7 @@ def _runtime_event(graph: GraphDocument, event: RuntimeEventInput) -> RuntimeEve
         dialect=event.dialect,
         statement_sha256=event.statement_sha256,
         inputs=tuple(_runtime_input_reference(graph, node_id) for node_id in event.inputs),
+        duration_ms=event.duration_ms,
         result=event.result,
         error_code=event.error_code,
     )

@@ -12,7 +12,7 @@ from tarel.lineage.contracts import LineageFailure
 
 _INPUT_VERSION = "tarel.runtime-lineage-input.v0.1"
 _DOCUMENT_VERSION = "tarel.runtime-lineage.v0.1"
-_DIALECTS = frozenset({"postgresql", "sqlite", "sqlserver"})
+_DIALECTS = frozenset({"duckdb", "postgresql", "sqlite", "sqlserver"})
 _SQL_STATUSES = frozenset({"failed", "succeeded"})
 _MONGO_OPERATIONS = frozenset({"aggregate", "find"})
 _MONGO_STATUSES = frozenset({"failed", "succeeded"})
@@ -30,17 +30,26 @@ class RuntimeResultEvidence:
     columns: tuple[str, ...]
     row_count: int
     sha256: str
+    truncated: bool | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "columns": list(self.columns),
             "row_count": self.row_count,
             "sha256": self.sha256,
         }
+        if self.truncated is not None:
+            result["truncated"] = self.truncated
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuntimeResultEvidence:
-        _fields(data, {"columns", "row_count", "sha256"}, "result")
+        _fields(
+            data,
+            {"columns", "row_count", "sha256"},
+            "result",
+            optional={"truncated"},
+        )
         columns = _strings(data.get("columns"), "result columns", limit=_MAX_COLUMNS)
         if not columns or len(columns) != len(set(item.casefold() for item in columns)):
             raise LineageFailure(
@@ -52,6 +61,11 @@ class RuntimeResultEvidence:
             columns=columns,
             row_count=row_count,
             sha256=_sha256(data.get("sha256"), "result sha256"),
+            truncated=(
+                _boolean(data.get("truncated"), "result truncated")
+                if "truncated" in data
+                else None
+            ),
         )
 
 
@@ -66,9 +80,10 @@ class RuntimeSQLAttemptInput:
     inputs: tuple[str, ...]
     result: RuntimeResultEvidence | None = None
     error_code: str | None = None
+    duration_ms: int | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "call_id": self.call_id,
             "dialect": self.dialect,
             "error_code": self.error_code,
@@ -81,6 +96,9 @@ class RuntimeSQLAttemptInput:
             "statement_sha256": self.statement_sha256,
             "status": self.status,
         }
+        if self.duration_ms is not None:
+            result["duration_ms"] = self.duration_ms
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuntimeSQLAttemptInput:
@@ -100,6 +118,7 @@ class RuntimeSQLAttemptInput:
                 "status",
             },
             "SQL event",
+            optional={"duration_ms"},
         )
         if data.get("kind") != "sql_query":
             raise LineageFailure(
@@ -144,6 +163,11 @@ class RuntimeSQLAttemptInput:
             dialect=_choice(data.get("dialect"), "SQL event dialect", _DIALECTS),
             statement_sha256=_sha256(data.get("statement_sha256"), "statement_sha256"),
             inputs=inputs,
+            duration_ms=(
+                _integer(data.get("duration_ms"), "SQL event duration_ms", minimum=0)
+                if "duration_ms" in data
+                else None
+            ),
             result=result,
             error_code=error_code,
         )
@@ -423,9 +447,10 @@ class RuntimeSQLAttempt:
     inputs: tuple[RuntimeInputReference, ...]
     result: RuntimeResultEvidence | None = None
     error_code: str | None = None
+    duration_ms: int | None = None
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        result: dict[str, object] = {
             "call_id": self.call_id,
             "dialect": self.dialect,
             "error_code": self.error_code,
@@ -438,6 +463,9 @@ class RuntimeSQLAttempt:
             "statement_sha256": self.statement_sha256,
             "status": self.status,
         }
+        if self.duration_ms is not None:
+            result["duration_ms"] = self.duration_ms
+        return result
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> RuntimeSQLAttempt:
@@ -456,6 +484,7 @@ class RuntimeSQLAttempt:
             dialect=input_event.dialect,
             statement_sha256=input_event.statement_sha256,
             inputs=references,
+            duration_ms=input_event.duration_ms,
             result=input_event.result,
             error_code=input_event.error_code,
         )
@@ -731,14 +760,27 @@ def _unique_object(items: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _fields(data: dict[str, Any], expected: set[str], label: str) -> None:
-    unknown = set(data) - expected
+def _fields(
+    data: dict[str, Any],
+    expected: set[str],
+    label: str,
+    *,
+    optional: set[str] | None = None,
+) -> None:
+    allowed = expected | (optional or set())
+    unknown = set(data) - allowed
     missing = expected - set(data)
     if unknown or missing:
         raise LineageFailure(
             "invalid_runtime_lineage",
             f"{label} has unexpected or missing fields.",
         )
+
+
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise LineageFailure("invalid_runtime_lineage", f"{label} must be a boolean.")
+    return value
 
 
 def _object(value: object, label: str) -> dict[str, Any]:

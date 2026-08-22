@@ -401,12 +401,16 @@ trace = tarel.lineage.trace_runtime("agent-run-001", "accepted-duckdb-call")
 ```
 
 The payload is bound to an exact graph revision and declares read-only SQL `select` or MongoDB
-`find`/`aggregate` operations. It contains statement or request hashes, result hashes, graph node
-IDs, row counts, column names, statuses, safe error codes, and explicit DuckDB dependencies on
-earlier successful calls. It cannot contain SQL text, MongoDB filters or pipelines, parameters,
-documents, raw rows, connection URLs, credentials, or free-form database errors. Imports are
-create-only. `lineage.list_runtime()` lists these immutable run documents. See
-[Runtime lineage](runtime-lineage.md) for the current SQL/MongoDB/DuckDB boundary.
+`find`/`aggregate` operations. A direct DuckDB source is represented by `sql_query` with
+`dialect: "duckdb"`; a temporary DuckDB computation over earlier calls remains a separate
+`federated_query` with `engine: "duckdb"` and explicit dependencies. Events contain statement or
+request hashes, result hashes, graph node IDs, row counts, column names, statuses, safe error codes,
+and may include caller-measured `duration_ms` and result `truncated` evidence. They cannot contain
+SQL text, MongoDB filters or pipelines, parameters, documents, raw rows, connection URLs,
+credentials, or free-form database errors. Imports are create-only. `lineage.list_runtime()` lists
+these immutable run documents. See [Runtime lineage](runtime-lineage.md) for the current boundary
+and [Entity-resolution candidates](entity-resolution-candidates.md) for the reviewed gap and
+proposed contract.
 
 ### Feed a Space/Lineage GUI
 
