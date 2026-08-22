@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import tomllib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
@@ -26,8 +26,9 @@ from tarel.annotations.review import (
 )
 from tarel.annotations.runner import run_annotation_batch
 from tarel.annotations.states import selected_annotation_states
-from tarel.annotations.tasks import plan_annotation_tasks
+from tarel.annotations.tasks import plan_annotation_tasks, validate_annotation_samples
 from tarel.connectors.authoring import ScaffoldResult, scaffold_connector
+from tarel.connectors.catalog import validate_catalog_result
 from tarel.connectors.contracts import (
     CatalogRequest,
     CatalogResult,
@@ -73,7 +74,7 @@ from tarel.focus.core import (
 from tarel.focus.store import FileFocusStore
 from tarel.graph.build import build_graph_from_catalog
 from tarel.graph.change_store import FileGraphChangeStore
-from tarel.graph.contracts import GraphDocument, GraphEdge
+from tarel.graph.contracts import GraphDocument, GraphEdge, GraphFailure
 from tarel.graph.refresh import GraphRefreshReport, refresh_graph
 from tarel.graph.revision import graph_revision
 from tarel.graph.store import FileGraphStore
@@ -110,7 +111,7 @@ from tarel.relationships.core import (
     relationship_candidates,
     relationship_pair,
 )
-from tarel.retrieval.contracts import IndexBuildResult
+from tarel.retrieval.contracts import IndexBuildResult, RetrievalFailure
 from tarel.retrieval.index import FileRetrievalIndex, search_retrieval
 from tarel.retrieval.local import (
     DEFAULT_MODEL_NAME,
@@ -501,6 +502,23 @@ def build_graph_use_case(
     graph = build_graph_from_catalog(name, catalog)
     path = _graph_store(runtime).save(graph)
     return GraphBuildResult(graph=graph, path=path)
+
+
+def import_catalog_use_case(
+    name: str,
+    catalog: CatalogResult,
+    *,
+    runtime: TarelRuntime | None = None,
+) -> GraphBuildResult:
+    store = _graph_store(runtime)
+    if name in store.list():
+        raise GraphFailure(
+            "graph_exists",
+            f"Graph already exists: {name}. Catalog import never overwrites a graph.",
+        )
+    validate_catalog_result(catalog)
+    graph = build_graph_from_catalog(name, catalog)
+    return GraphBuildResult(graph=graph, path=store.save(graph))
 
 
 def refresh_graph_use_case(
@@ -1256,9 +1274,12 @@ def build_retrieval_index_use_case(
     model_path: Path | None = None,
     batch_size: int = 16,
     n_threads: int | None = None,
+    resume: bool = False,
     progress: Callable[[int, int, str], None] | None = None,
     runtime: TarelRuntime | None = None,
 ) -> IndexBuildResult:
+    if not 1 <= batch_size <= 256:
+        raise RetrievalFailure("invalid_batch_size", "Batch size must be between 1 and 256.")
     graph = _graph_store(runtime).load(name)
     resolved_model = resolve_model_path(model_path)
     return _retrieval_index(runtime).build(
@@ -1266,6 +1287,7 @@ def build_retrieval_index_use_case(
         embedder=LlamaCppEmbedding(resolved_model, n_threads=n_threads),
         model_path=resolved_model,
         batch_size=batch_size,
+        resume=resume,
         progress=progress,
     )
 
@@ -1277,8 +1299,21 @@ def retrieval_index_status_use_case(
 ) -> dict[str, object]:
     graph = _graph_store(runtime).load(name)
     store = _retrieval_index(runtime)
-    metadata = store.metadata(name)
+    checkpoint = store.checkpoint_status(name)
+    try:
+        metadata = store.metadata(name)
+    except RetrievalFailure as exc:
+        if exc.code != "index_not_found" or checkpoint is None:
+            raise
+        return {
+            "checkpoint": checkpoint,
+            "current": False,
+            "index": None,
+            "model_available": None,
+            "path": str(store.path(name)),
+        }
     return {
+        "checkpoint": checkpoint,
         "current": metadata.graph_hash == graph_revision(graph),
         "index": metadata.to_dict(),
         "model_available": Path(metadata.model_path).is_file(),
@@ -1540,6 +1575,7 @@ def plan_annotations_use_case(
         limit=limit,
         missing_only=missing_only,
         sample_limit=sample_limit,
+        samples_by_target=None,
         profile_row_limit=profile_row_limit,
         include_small_domain_values=include_small_domain_values,
         config_path=config_path,
@@ -1601,6 +1637,7 @@ def plan_focus_annotations_use_case(
                 limit=None,
                 missing_only=missing_only,
                 sample_limit=sample_limit,
+                samples_by_target=None,
                 profile_row_limit=profile_row_limit,
                 include_small_domain_values=include_small_domain_values,
                 config_path=config_path,
@@ -1714,6 +1751,7 @@ def run_annotation_batch_use_case(
     model: str | None = None,
     timeout: float = 120.0,
     sample_limit: int = 0,
+    samples_by_target: Mapping[str, SampleResult] | None = None,
     profile_row_limit: int = 0,
     include_small_domain_values: bool = False,
     config_path: Path | None = None,
@@ -1733,6 +1771,7 @@ def run_annotation_batch_use_case(
         limit=limit,
         missing_only=missing_only,
         sample_limit=sample_limit,
+        samples_by_target=samples_by_target,
         profile_row_limit=profile_row_limit,
         include_small_domain_values=include_small_domain_values,
         config_path=config_path,
@@ -1768,6 +1807,7 @@ def _plan_graph_annotations(
     limit: int | None,
     missing_only: bool,
     sample_limit: int,
+    samples_by_target: Mapping[str, SampleResult] | None,
     profile_row_limit: int,
     include_small_domain_values: bool,
     config_path: Path | None,
@@ -1779,6 +1819,11 @@ def _plan_graph_annotations(
 ) -> tuple[AnnotationTask, ...]:
     if not 0 <= sample_limit <= 10:
         raise ConnectorFailure("invalid_sample_limit", "Sample limit must be between 0 and 10.")
+    if sample_limit and samples_by_target:
+        raise AnnotationFailure(
+            "conflicting_annotation_samples",
+            "Use either connector sampling or caller-supplied samples, not both.",
+        )
     if not 0 <= profile_row_limit <= 100_000:
         raise ConnectorFailure(
             "invalid_profile_row_limit",
@@ -1797,7 +1842,7 @@ def _plan_graph_annotations(
         missing_only=missing_only,
     )
     node_by_id = graph.node_by_id()
-    samples: dict[str, SampleResult] = {}
+    samples = validate_annotation_samples(graph, samples_by_target or {})
     profiles: dict[str, ObjectProfileResult] = {}
     if sample_limit:
         for task in tasks:

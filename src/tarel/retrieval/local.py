@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from tarel.retrieval.contracts import RetrievalFailure
 
 DEFAULT_MODEL_NAME = "qwen3-embedding-0.6b-q4-k-m"
+_LLAMA_TOKEN_BATCH_SIZE = 256
 _QUERY_INSTRUCTION = (
     "Instruct: Retrieve relevant DWH, BI, ERP database tables and fields for this "
     "analytics question.\nQuery: "
@@ -199,8 +200,8 @@ class LlamaCppEmbedding:
         self._model: Any = Llama(
             model_path=str(resolved),
             n_ctx=n_ctx,
-            n_batch=256,
-            n_ubatch=256,
+            n_batch=_LLAMA_TOKEN_BATCH_SIZE,
+            n_ubatch=_LLAMA_TOKEN_BATCH_SIZE,
             n_threads=threads,
             n_gpu_layers=0,
             embedding=True,
@@ -220,12 +221,19 @@ class LlamaCppEmbedding:
         if not 1 <= batch_size <= 256:
             raise RetrievalFailure("invalid_batch_size", "Batch size must be between 1 and 256.")
         vectors: list[tuple[float, ...]] = []
+        # llama.cpp's n_batch is token capacity, not a safe multi-sequence document count.
+        # Keep caller batches for scheduling, but decode one document at a time.
         for offset in range(0, len(texts), batch_size):
-            batch = list(texts[offset : offset + batch_size])
-            embedded = self._model.embed(batch, normalize=True, truncate=True)
-            if not isinstance(embedded, list) or len(embedded) != len(batch):
-                raise RetrievalFailure("embedding_failed", "llama.cpp returned invalid embeddings.")
-            vectors.extend(_normalized_vector(vector) for vector in embedded)
+            batch = texts[offset : offset + batch_size]
+            for position, text in enumerate(batch, start=offset + 1):
+                try:
+                    embedded = self._model.embed(text, normalize=True, truncate=True)
+                except Exception as exc:
+                    raise RetrievalFailure(
+                        "embedding_failed",
+                        f"llama.cpp failed while embedding document {position} of {len(texts)}.",
+                    ) from exc
+                vectors.append(_normalized_vector(embedded))
         return tuple(vectors)
 
     def embed_query(self, text: str) -> tuple[float, ...]:

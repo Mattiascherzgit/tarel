@@ -76,3 +76,4 @@ class IndexMetadata:
 class IndexBuildResult:
     path: Path
     metadata: IndexMetadata
+    resumed_documents: int = 0

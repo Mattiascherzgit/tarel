@@ -44,6 +44,7 @@ from tarel.application import (
     download_embedding_model_use_case,
     edit_annotation_use_case,
     embedding_model_status_use_case,
+    import_catalog_use_case,
     list_annotation_reviews_use_case,
     list_focuses_use_case,
     list_graphs_use_case,
@@ -73,6 +74,7 @@ from tarel.application import (
     show_workspace_zone_use_case,
     test_provider_use_case,
 )
+from tarel.connectors.catalog import load_catalog_result
 from tarel.connectors.contracts import (
     CatalogResult,
     ConnectorCheck,
@@ -628,8 +630,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     index_build.add_argument("name", help="Local graph name.")
     index_build.add_argument("--model", type=Path, dest="model_path")
-    index_build.add_argument("--batch-size", type=int, default=16)
+    index_build.add_argument(
+        "--batch-size",
+        type=int,
+        default=16,
+        help="Documents per index progress batch; llama.cpp decodes each document separately.",
+    )
     index_build.add_argument("--threads", type=int, dest="n_threads")
+    index_build.add_argument(
+        "--resume",
+        action="store_true",
+        help="Checkpoint completed embedding batches and resume a matching interrupted build.",
+    )
     _add_format_argument(index_build)
 
     index_status = index_commands.add_parser("status", help="Inspect one retrieval index.")
@@ -658,6 +670,19 @@ def build_parser() -> argparse.ArgumentParser:
     graph_refresh.add_argument("--config", type=Path, help="Private connector configuration.")
     graph_refresh.add_argument("--namespace", "--schema", dest="namespace")
     _add_format_argument(graph_refresh)
+
+    graph_import = graph_commands.add_parser(
+        "import-catalog",
+        help="Persist an already observed catalog without running discovery again.",
+    )
+    graph_import.add_argument("name", help="New local graph name.")
+    graph_import.add_argument(
+        "--source",
+        type=Path,
+        required=True,
+        help="CatalogResult JSON produced by a trusted caller or connector discovery.",
+    )
+    _add_format_argument(graph_import)
 
     graph_list = graph_commands.add_parser("list", help="List local graphs.")
     _add_format_argument(graph_list)
@@ -1590,9 +1615,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_path=args.model_path,
                 batch_size=args.batch_size,
                 n_threads=args.n_threads,
+                resume=args.resume,
                 progress=_index_build_progress,
             )
-            payload = {"index": result.metadata.to_dict(), "path": str(result.path)}
+            payload = {
+                "index": result.metadata.to_dict(),
+                "path": str(result.path),
+                "resumed_documents": result.resumed_documents,
+            }
             if args.format == "json":
                 print(json.dumps(payload, indent=2, sort_keys=True))
             else:
@@ -1600,6 +1630,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"Documents: {result.metadata.document_count}")
                 print(f"Dimensions: {result.metadata.dimensions}")
                 print(f"Model: {result.metadata.model_id}")
+                print(f"Resumed documents: {result.resumed_documents}")
                 print(f"Path: {result.path}")
             return 0
 
@@ -1615,6 +1646,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                     print(f"Documents: {metadata['document_count']}")
                     print(f"Dimensions: {metadata['dimensions']}")
                     print(f"Model: {metadata['model_id']}")
+                checkpoint = payload.get("checkpoint")
+                if isinstance(checkpoint, dict):
+                    print(
+                        "Checkpoint: "
+                        f"{checkpoint['completed_documents']}/{checkpoint['document_count']}"
+                    )
                 print(f"Path: {payload['path']}")
             return 0 if payload["current"] else 1
 
@@ -1625,6 +1662,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 config_path=args.config,
                 database=args.database,
                 namespace=args.namespace,
+            )
+            _render_graph_summary(result.graph, output_format=args.format, path=result.path)
+            return 0
+
+        if args.command == "graph" and args.graph_command == "import-catalog":
+            result = import_catalog_use_case(
+                args.name,
+                load_catalog_result(args.source),
             )
             _render_graph_summary(result.graph, output_format=args.format, path=result.path)
             return 0
@@ -3049,3 +3094,5 @@ def _index_build_progress(completed: int, total: int, phase: str) -> None:
         print("Writing retrieval index...", file=sys.stderr)
     elif phase == "ready":
         print("Retrieval index ready.", file=sys.stderr)
+    elif phase == "resuming":
+        print(f"Resuming retrieval index: {completed}/{total} already embedded", file=sys.stderr)
