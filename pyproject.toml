@@ -69,6 +69,7 @@ only-include = [
   "docs/architecture.md",
   "docs/assets",
   "docs/context-contract.md",
+  "docs/entity-resolution-candidates.md",
   "docs/local-retrieval.md",
   "docs/retail-demo.md",
   "docs/runtime-lineage.md",
