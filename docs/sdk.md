@@ -403,13 +403,20 @@ trace = tarel.lineage.trace_runtime("agent-run-001", "accepted-duckdb-call")
 The payload is bound to an exact graph revision and declares read-only SQL `select` or MongoDB
 `find`/`aggregate` operations. A direct DuckDB source is represented by `sql_query` with
 `dialect: "duckdb"`; a temporary DuckDB computation over earlier calls remains a separate
-`federated_query` with `engine: "duckdb"` and explicit dependencies. Events contain statement or
-request hashes, result hashes, graph node IDs, row counts, column names, statuses, safe error codes,
-and may include caller-measured `duration_ms` and result `truncated` evidence. They cannot contain
-SQL text, MongoDB filters or pipelines, parameters, documents, raw rows, connection URLs,
-credentials, or free-form database errors. Imports are create-only. `lineage.list_runtime()` lists
-these immutable run documents. See [Runtime lineage](runtime-lineage.md) for the current boundary
-and [Entity-resolution candidates](entity-resolution-candidates.md) for the separate matching
+`federated_query` with `engine: "duckdb"`. The v0.2 contract also accepts caller-observed
+`python_analysis` events with `tool_type: "python"`; TAREL does not execute the Python code.
+
+Federated and Python analysis events identify their executor plugin and version, consume ordered
+prior call IDs, bind each call to a source alias and hashed bounded input frame, and retain output
+grain, join coverage, unmatched counts, reconciliation state, runtime, applied limits, result hash,
+and status. V2 must import all events in one runtime document in dependency order: v0.2 does not
+resolve `consumes` across separately persisted documents.
+
+Events cannot contain SQL or Python code, MongoDB filters or pipelines, parameters, documents,
+input frames, raw rows, connection URLs, credentials, or free-form errors. Imports are create-only.
+`lineage.list_runtime()` lists these immutable run documents. See
+[Runtime lineage](runtime-lineage.md) for the exact v0.1/v0.2 shapes and
+[Entity-resolution candidates](entity-resolution-candidates.md) for the separate matching
 hypothesis contract.
 
 ### Retrieve entity-resolution hypotheses
@@ -618,7 +625,7 @@ never downloads the model.
 - `tarel.search`: graph and workspace retrieval
 - `tarel.context`: retrieval snippets, graph/workspace cache prefixes, stable/dynamic splitting,
   packet diff and refresh impact
-- `tarel.lineage`: static lineage plus create-only observed SQL/MongoDB/DuckDB runtime imports
+- `tarel.lineage`: static lineage plus create-only observed SQL/MongoDB/DuckDB/Python runtime imports
 - `tarel.view`: one combined graph/workspace projection for Space and Lineage canvases
 - `tarel.focus`: list, load, build
 - `tarel.annotation`: plan, apply, inspect, edit, decide and provider batch
