@@ -331,6 +331,163 @@ class RuntimeLineageTests(TestCase):
         self.assertEqual(observed.events[2].error_code, "mongo_timeout")
         self.assertIsNone(observed.events[2].result)
 
+    def test_sdk_imports_v02_duckdb_and_python_analysis_evidence(self) -> None:
+        with TemporaryDirectory(dir=Path.cwd()) as temporary_directory:
+            sdk = Tarel(Path(temporary_directory) / ".tarel")
+            graph = _graph()
+            sdk.runtime.graph_store().save(graph)
+            observed = _observed_v02(graph)
+
+            imported = sdk.lineage.import_runtime("analysis-run", observed)
+            loaded = sdk.lineage.load_runtime("analysis-run")
+            trace = sdk.lineage.trace_runtime("analysis-run", "python-analysis")
+
+        self.assertEqual(imported.document, loaded)
+        self.assertEqual(loaded.contract_version, "tarel.runtime-lineage.v0.2")
+        federated = loaded.events[4]
+        python_analysis = loaded.events[6]
+        self.assertEqual(federated.to_dict()["engine"], "duckdb")
+        self.assertEqual(federated.executor.plugin_id, "v2.duckdb")
+        self.assertEqual(federated.analysis.join_coverage, 0.75)
+        self.assertEqual(dict(federated.analysis.unmatched_counts), {"orders": 2})
+        self.assertEqual(python_analysis.to_dict()["tool_type"], "python")
+        self.assertEqual(python_analysis.executor.plugin_id, "v2.python")
+        self.assertEqual(python_analysis.analysis.reconciliation_status, "matched")
+        self.assertEqual(
+            tuple((item.call_id, item.kind) for item in trace.calls),
+            (
+                ("sql-success", "sql_query"),
+                ("sql-customers", "sql_query"),
+                ("mongo-profiles", "mongo_query"),
+                ("duckdb-accepted", "federated_query"),
+                ("python-analysis", "python_analysis"),
+            ),
+        )
+        self.assertEqual(
+            tuple((item.source_call_id, item.target_call_id) for item in trace.dependencies),
+            (
+                ("sql-success", "duckdb-accepted"),
+                ("sql-customers", "duckdb-accepted"),
+                ("mongo-profiles", "duckdb-accepted"),
+                ("duckdb-accepted", "python-analysis"),
+            ),
+        )
+
+    def test_cli_roundtrips_v02_through_the_sdk_application_path(self) -> None:
+        previous = Path.cwd()
+        with TemporaryDirectory(dir=previous) as temporary_directory:
+            project = Path(temporary_directory)
+            graph = _graph()
+            sdk = Tarel(project / ".tarel")
+            sdk.runtime.graph_store().save(graph)
+            source = project / "analysis.json"
+            source.write_text(json.dumps(_observed_v02(graph).to_dict()), encoding="utf-8")
+            imported = StringIO()
+            traced = StringIO()
+            try:
+                os.chdir(project)
+                with redirect_stdout(imported):
+                    import_exit = main(
+                        [
+                            "lineage",
+                            "import-runtime",
+                            "analysis-cli",
+                            "--source",
+                            str(source),
+                            "--format",
+                            "json",
+                        ]
+                    )
+                with redirect_stdout(traced):
+                    trace_exit = main(
+                        [
+                            "lineage",
+                            "trace-runtime",
+                            "analysis-cli",
+                            "python-analysis",
+                            "--format",
+                            "json",
+                        ]
+                    )
+            finally:
+                os.chdir(previous)
+            loaded = sdk.lineage.load_runtime("analysis-cli")
+
+        self.assertEqual(import_exit, 0)
+        self.assertEqual(trace_exit, 0)
+        self.assertEqual(json.loads(imported.getvalue())["runtime_lineage"], loaded.to_dict())
+        self.assertEqual(json.loads(traced.getvalue())["calls"][-1]["kind"], "python_analysis")
+
+    def test_v02_rejects_unsafe_or_inconsistent_analysis_evidence(self) -> None:
+        graph = _graph()
+
+        def payload() -> dict:
+            return _observed_v02(graph).to_dict()
+
+        invalid_payloads = []
+        raw_code = payload()
+        raw_code["events"][6]["code"] = "print('PROTECTED_VALUE')"
+        invalid_payloads.append(raw_code)
+        wrong_input_order = payload()
+        wrong_input_order["events"][4]["inputs"].reverse()
+        invalid_payloads.append(wrong_input_order)
+        duplicate_alias = payload()
+        duplicate_alias["events"][4]["inputs"][1]["alias"] = "orders"
+        invalid_payloads.append(duplicate_alias)
+        wrong_source = payload()
+        wrong_source["events"][4]["inputs"][0]["source"] = "another-reader"
+        invalid_payloads.append(wrong_source)
+        unknown_unmatched_alias = payload()
+        unknown_unmatched_alias["events"][4]["analysis"]["unmatched_counts"] = {"other": 1}
+        invalid_payloads.append(unknown_unmatched_alias)
+        invalid_coverage = payload()
+        invalid_coverage["events"][4]["analysis"]["join_coverage"] = 1.1
+        invalid_payloads.append(invalid_coverage)
+        invalid_limit = payload()
+        invalid_limit["events"][6]["analysis"]["limits"]["timeout_ms"] = 0
+        invalid_payloads.append(invalid_limit)
+        empty_success_grain = payload()
+        empty_success_grain["events"][6]["analysis"]["grain"] = []
+        invalid_payloads.append(empty_success_grain)
+        duplicate_grain = payload()
+        duplicate_grain["events"][6]["analysis"]["grain"] = ["Segment", "segment"]
+        invalid_payloads.append(duplicate_grain)
+        external_dependency = payload()
+        external_dependency["events"][4]["consumes"][0] = "another-document-call"
+        external_dependency["events"][4]["inputs"][0]["call_id"] = "another-document-call"
+        invalid_payloads.append(external_dependency)
+
+        for invalid in invalid_payloads:
+            with self.subTest(invalid=invalid), self.assertRaises(LineageFailure) as raised:
+                RuntimeLineageInput.from_dict(invalid)
+            self.assertEqual(raised.exception.code, "invalid_runtime_lineage")
+
+        v01_with_python = _observed_v02(graph).to_dict()
+        v01_with_python["contract_version"] = "tarel.runtime-lineage-input.v0.1"
+        v01_with_python["events"] = [v01_with_python["events"][6]]
+        v01_with_python["events"][0]["sequence"] = 1
+        with self.assertRaises(LineageFailure) as unsupported_kind:
+            RuntimeLineageInput.from_dict(v01_with_python)
+        self.assertEqual(unsupported_kind.exception.code, "invalid_runtime_lineage")
+
+    def test_v02_preserves_failed_python_analysis_without_raw_code(self) -> None:
+        payload = _observed_v02(_graph()).to_dict()
+        analysis = payload["events"][6]
+        analysis["status"] = "failed"
+        analysis["result"] = None
+        analysis["error_code"] = "python_timeout"
+        analysis["analysis"]["grain"] = []
+        analysis["analysis"]["join_coverage"] = None
+        analysis["analysis"]["reconciliation_status"] = "not_run"
+
+        observed = RuntimeLineageInput.from_dict(payload)
+        roundtripped = observed.to_dict()
+
+        self.assertEqual(roundtripped, payload)
+        self.assertEqual(observed.events[6].error_code, "python_timeout")
+        self.assertIsNone(observed.events[6].result)
+        self.assertNotIn('"code":', json.dumps(roundtripped))
+
 
 def _observed(graph) -> RuntimeLineageInput:
     order = next(node for node in graph.nodes if node.label == "dbo.Orders")
@@ -445,6 +602,116 @@ def _observed(graph) -> RuntimeLineageInput:
             "run_id": "agent-run-001",
         }
     )
+
+
+def _observed_v02(graph) -> RuntimeLineageInput:
+    payload = _observed(graph).to_dict()
+    payload["contract_version"] = "tarel.runtime-lineage-input.v0.2"
+    accepted = payload["events"][4]
+    accepted.update(
+        {
+            "analysis": {
+                "duration_ms": 34,
+                "grain": ["CustomerId"],
+                "join_coverage": 0.75,
+                "limits": {
+                    "input_row_limit": 10_000,
+                    "output_row_limit": 1_000,
+                    "timeout_ms": 5_000,
+                },
+                "reconciliation_status": "partial",
+                "unmatched_counts": {"orders": 2},
+            },
+            "executor": {"plugin_id": "v2.duckdb", "plugin_version": "1.0.0"},
+            "inputs": [
+                {
+                    "alias": "orders",
+                    "call_id": "sql-success",
+                    "frame_sha256": hashlib.sha256(b"orders-frame").hexdigest(),
+                    "source": "sales-reader",
+                },
+                {
+                    "alias": "customers",
+                    "call_id": "sql-customers",
+                    "frame_sha256": hashlib.sha256(b"customers-frame").hexdigest(),
+                    "source": "customer-reader",
+                },
+                {
+                    "alias": "profiles",
+                    "call_id": "mongo-profiles",
+                    "frame_sha256": hashlib.sha256(b"profiles-frame").hexdigest(),
+                    "source": "profiles-reader",
+                },
+            ],
+        }
+    )
+    failed = payload["events"][5]
+    failed.update(
+        {
+            "analysis": {
+                "duration_ms": 9,
+                "grain": [],
+                "join_coverage": None,
+                "limits": {
+                    "input_row_limit": 1_000,
+                    "output_row_limit": 100,
+                    "timeout_ms": 1_000,
+                },
+                "reconciliation_status": "not_run",
+                "unmatched_counts": {},
+            },
+            "executor": {"plugin_id": "v2.duckdb", "plugin_version": "1.0.0"},
+            "inputs": [
+                {
+                    "alias": "orders",
+                    "call_id": "sql-success",
+                    "frame_sha256": hashlib.sha256(b"orders-frame").hexdigest(),
+                    "source": "sales-reader",
+                }
+            ],
+        }
+    )
+    payload["events"].append(
+        {
+            "analysis": {
+                "duration_ms": 21,
+                "grain": ["Segment"],
+                "join_coverage": None,
+                "limits": {
+                    "input_row_limit": 1_000,
+                    "output_row_limit": 100,
+                    "timeout_ms": 2_000,
+                },
+                "reconciliation_status": "matched",
+                "unmatched_counts": {},
+            },
+            "call_id": "python-analysis",
+            "code_sha256": hashlib.sha256(b"controlled python code").hexdigest(),
+            "consumes": ["duckdb-accepted"],
+            "error_code": None,
+            "executor": {"plugin_id": "v2.python", "plugin_version": "1.0.0"},
+            "inputs": [
+                {
+                    "alias": "federated",
+                    "call_id": "duckdb-accepted",
+                    "frame_sha256": hashlib.sha256(b"federated-frame").hexdigest(),
+                    "source": "federated-memory",
+                }
+            ],
+            "kind": "python_analysis",
+            "operation": "analyze",
+            "result": {
+                "columns": ["Segment", "GrossAmount"],
+                "row_count": 3,
+                "sha256": hashlib.sha256(b"python-result").hexdigest(),
+                "truncated": False,
+            },
+            "sequence": 7,
+            "status": "succeeded",
+            "tool_type": "python",
+        }
+    )
+    return RuntimeLineageInput.from_dict(payload)
 
 
 def _graph():

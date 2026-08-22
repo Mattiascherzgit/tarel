@@ -47,8 +47,11 @@ from tarel.lineage.runtime import (
     RuntimeLineageTrace,
     RuntimeMongoAttempt,
     RuntimeMongoAttemptInput,
+    RuntimePythonAnalysis,
+    RuntimePythonAnalysisInput,
     RuntimeSQLAttempt,
     RuntimeTraceCall,
+    runtime_lineage_document_version,
     validate_runtime_lineage_input,
 )
 from tarel.lineage.runtime_store import FileRuntimeLineageStore
@@ -197,6 +200,7 @@ def import_runtime_lineage_use_case(
         graph_name=graph.name,
         graph_revision=current_revision,
         events=events,
+        contract_version=runtime_lineage_document_version(observed.contract_version),
     )
     return RuntimeLineageImportResult(document, _runtime_lineage_store(runtime).create(document))
 
@@ -239,7 +243,7 @@ def trace_runtime_lineage_use_case(
         if event.call_id in reached:
             return
         reached.add(event.call_id)
-        if isinstance(event, RuntimeFederatedQuery):
+        if isinstance(event, (RuntimeFederatedQuery, RuntimePythonAnalysis)):
             for source_call_id in event.consumes:
                 dependencies.add((source_call_id, event.call_id))
                 visit(events[source_call_id])
@@ -262,7 +266,9 @@ def trace_runtime_lineage_use_case(
                 call_id=event.call_id,
                 sequence=event.sequence,
                 kind=(
-                    "federated_query"
+                    "python_analysis"
+                    if isinstance(event, RuntimePythonAnalysis)
+                    else "federated_query"
                     if isinstance(event, RuntimeFederatedQuery)
                     else "mongo_query"
                     if isinstance(event, RuntimeMongoAttempt)
@@ -288,6 +294,19 @@ def trace_runtime_lineage_use_case(
 
 
 def _runtime_event(graph: GraphDocument, event: RuntimeEventInput) -> RuntimeEvent:
+    if isinstance(event, RuntimePythonAnalysisInput):
+        return RuntimePythonAnalysis(
+            sequence=event.sequence,
+            call_id=event.call_id,
+            status=event.status,
+            code_sha256=event.code_sha256,
+            consumes=event.consumes,
+            executor=event.executor,
+            input_frames=event.input_frames,
+            analysis=event.analysis,
+            result=event.result,
+            error_code=event.error_code,
+        )
     if isinstance(event, RuntimeFederatedQueryInput):
         return RuntimeFederatedQuery(
             sequence=event.sequence,
@@ -297,6 +316,9 @@ def _runtime_event(graph: GraphDocument, event: RuntimeEventInput) -> RuntimeEve
             consumes=event.consumes,
             result=event.result,
             error_code=event.error_code,
+            executor=event.executor,
+            input_frames=event.input_frames,
+            analysis=event.analysis,
         )
     if isinstance(event, RuntimeMongoAttemptInput):
         return RuntimeMongoAttempt(

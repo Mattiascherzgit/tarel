@@ -93,10 +93,12 @@ Lineage keeps different evidence separate:
 - read/write claims describe **where data flows**;
 - review state describes **how much the claim is trusted**.
 
-Sanitized runtime SQL, MongoDB, and federated DuckDB attempts use a separate create-only contract. They
-retain ordered call identity, exact graph bindings and explicit result dependencies, status, row
-count, schema, and hashes without persisting query text, parameters, raw rows, connection details,
-or free-form database errors. See
+Sanitized runtime SQL, MongoDB, federated DuckDB, and caller-executed Python analysis observations
+use a separate create-only contract. They retain ordered call identity, exact graph bindings,
+explicit result dependencies, executor identity, bounded-frame hashes, reconciliation evidence,
+status, row count, schema, and hashes without persisting query/code text, parameters, raw rows,
+connection details, or free-form database errors. TAREL stores and traces these observations but
+executes no analysis code. See
 [Runtime lineage](docs/runtime-lineage.md).
 
 The text, JSON, SDK, and browser trace also expose the evidence attached to each hop. Importers can
@@ -355,7 +357,7 @@ activates the package explicitly.
 | `tarel knowledge` | Attach bounded Markdown/TXT context to annotation scopes |
 | `tarel relationship` | Add, discover, probe, and review joins |
 | `tarel entity` | Import, retrieve, inspect, and review entity-resolution hypotheses |
-| `tarel lineage` | Trace static lineage; import sanitized SQL/MongoDB/DuckDB runtime attempts |
+| `tarel lineage` | Trace static lineage; import sanitized SQL/MongoDB/DuckDB/Python observations |
 | `tarel focus` | Save report- or cube-centred upstream slices |
 | `tarel workspace` | Organize systems, areas, schemas, zones, and cross-graph joins |
 | `tarel search` | Run lexical, BM25, vector, or hybrid retrieval |
