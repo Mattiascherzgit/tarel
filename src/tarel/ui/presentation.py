@@ -6,6 +6,8 @@ import hashlib
 import json
 from collections.abc import Iterable
 
+from tarel.entity_resolution.contracts import EntityResolutionMatch
+from tarel.entity_resolution.projection import project_entity_resolution_edges
 from tarel.focus.contracts import FocusDocument, FocusMember
 from tarel.graph.contracts import GraphDocument, GraphEdge, GraphNode
 from tarel.graph.revision import graph_revision
@@ -30,6 +32,7 @@ def browser_graph(
     editable: bool = False,
     lineage_documents: Iterable[LineageDocument] = (),
     semantic_imports: Iterable[SemanticImportDocument] = (),
+    entity_resolution_matches: Iterable[EntityResolutionMatch] = (),
 ) -> dict[str, object]:
     return _browser_payload(
         (graph,),
@@ -38,6 +41,7 @@ def browser_graph(
         editable=editable,
         lineage_documents=tuple(lineage_documents),
         semantic_imports=tuple(semantic_imports),
+        entity_resolution_matches=tuple(entity_resolution_matches),
     )
 
 
@@ -49,6 +53,7 @@ def browser_workspace(
     editable: bool = False,
     lineage_documents: Iterable[LineageDocument] = (),
     semantic_imports: Iterable[SemanticImportDocument] = (),
+    entity_resolution_matches: Iterable[EntityResolutionMatch] = (),
 ) -> dict[str, object]:
     payload = _browser_payload(
         tuple(graphs),
@@ -56,6 +61,7 @@ def browser_workspace(
         editable=editable,
         lineage_documents=tuple(lineage_documents),
         semantic_imports=tuple(semantic_imports),
+        entity_resolution_matches=tuple(entity_resolution_matches),
         scope=scope,
     )
     objects = payload["objects"]
@@ -73,6 +79,7 @@ def _browser_payload(
     editable: bool,
     lineage_documents: tuple[LineageDocument, ...],
     semantic_imports: tuple[SemanticImportDocument, ...],
+    entity_resolution_matches: tuple[EntityResolutionMatch, ...],
     lineage_names: tuple[str, ...] = (),
     scope: ResolvedScope | None = None,
 ) -> dict[str, object]:
@@ -129,6 +136,22 @@ def _browser_payload(
                 )
             ) is not None
         )
+        graph_entity_matches = tuple(
+            item
+            for item in entity_resolution_matches
+            if item.candidate.graph_name == graph.name
+        )
+        edge_payloads.extend(
+            payload
+            for edge in project_entity_resolution_edges(graph, graph_entity_matches)
+            if (
+                payload := _edge_payload(
+                    edge,
+                    nodes,
+                    graph.name,
+                )
+            ) is not None
+        )
 
     documents = tuple(lineage_documents)
     selected_lineages = tuple(item.name for item in documents) or lineage_names
@@ -156,6 +179,13 @@ def _browser_payload(
         "dialect": first.dialect if len(graphs) == 1 else None,
         "editable": editable,
         "edges": sorted(edge_payloads, key=lambda item: str(item["id"])),
+        "entity_resolution": [
+            item.to_dict()
+            for item in sorted(
+                entity_resolution_matches,
+                key=lambda match: (match.candidate.graph_name, match.candidate.id),
+            )
+        ],
         "graph": first.name,
         "graphs": graph_payloads,
         "lineage_documents": browser_lineages(documents),
@@ -548,11 +578,15 @@ def _edge_payload(
     *,
     source_semantics: Iterable[dict[str, object]] = (),
 ) -> dict[str, object] | None:
-    if edge.type not in {"foreign_key", "relationship_candidate"}:
+    if edge.type not in {
+        "entity_resolution_candidate",
+        "foreign_key",
+        "relationship_candidate",
+    }:
         return None
     source = nodes.get(edge.source_id)
     target = nodes.get(edge.target_id)
-    if edge.type == "relationship_candidate":
+    if edge.type in {"entity_resolution_candidate", "relationship_candidate"}:
         if source is not None and source.type == "field":
             source = nodes.get(str(source.metadata.get("object_id") or ""))
         if target is not None and target.type == "field":

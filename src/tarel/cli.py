@@ -86,6 +86,11 @@ from tarel.connectors.contracts import (
 )
 from tarel.context import DEFAULT_MAX_CONTEXT_CHARACTERS, ContextFailure, ContextResult
 from tarel.demo import DemoFailure
+from tarel.entity_resolution.cli import (
+    add_entity_resolution_commands,
+    dispatch_entity_resolution,
+)
+from tarel.entity_resolution.contracts import EntityResolutionFailure
 from tarel.focus.contracts import FocusDocument, FocusFailure
 from tarel.graph.contracts import GraphDocument, GraphFailure
 from tarel.grounding import GroundingBundle
@@ -720,6 +725,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     add_lineage_commands(subcommands)
     add_semantic_commands(subcommands)
+    add_entity_resolution_commands(subcommands)
 
     focus = subcommands.add_parser(
         "focus",
@@ -1106,6 +1112,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         semantic_result = dispatch_semantic(args)
         if semantic_result is not None:
             return semantic_result
+
+        entity_result = dispatch_entity_resolution(args)
+        if entity_result is not None:
+            return entity_result
 
         if args.command == "focus" and args.focus_command == "build":
             result = build_focus_use_case(
@@ -2214,6 +2224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ConnectorFailure,
         ContextFailure,
         DemoFailure,
+        EntityResolutionFailure,
         FocusFailure,
         GraphFailure,
         KnowledgeFailure,

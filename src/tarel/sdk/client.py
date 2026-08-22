@@ -78,6 +78,19 @@ from tarel.context import ContextResult
 from tarel.context_caching import ContextCacheParts, split_context_packet
 from tarel.context_output import DEFAULT_MAX_CONTEXT_CHARACTERS
 from tarel.context_packets import ContextPacketDiff, ContextPacketImpact
+from tarel.entity_resolution.application import (
+    EntityResolutionChangeResult,
+    decide_entity_resolution_candidate_use_case,
+    find_entity_resolution_candidates_for_graph_use_case,
+    find_entity_resolution_candidates_use_case,
+    import_entity_resolution_candidate_use_case,
+    list_entity_resolution_candidates_use_case,
+    load_entity_resolution_candidate_use_case,
+)
+from tarel.entity_resolution.contracts import (
+    EntityResolutionCandidate,
+    EntityResolutionMatch,
+)
 from tarel.focus.contracts import FocusDocument
 from tarel.graph.contracts import GraphDocument, GraphEdge
 from tarel.grounding import GroundingAsset, GroundingBundle
@@ -172,6 +185,7 @@ class Tarel:
     __slots__ = (
         "annotation",
         "context",
+        "entity_resolution",
         "focus",
         "graph",
         "grounding",
@@ -196,6 +210,7 @@ class Tarel:
         self.source = SourceAPI(self.runtime)
         self.semantic = SemanticAPI(self.runtime)
         self.context = ContextAPI(self.runtime)
+        self.entity_resolution = EntityResolutionAPI(self.runtime)
         self.grounding = GroundingAPI(self.runtime)
         self.lineage = LineageAPI(self.runtime)
         self.focus = FocusAPI(self.runtime)
@@ -1328,12 +1343,18 @@ class ViewAPI(_RuntimeAPI):
             graph_name=name,
             runtime=self._runtime,
         )
+        entity_matches = find_entity_resolution_candidates_for_graph_use_case(
+            graph,
+            mode="confirmed_then_candidates",
+            runtime=self._runtime,
+        )
         return browser_graph(
             graph,
             workspaces=workspaces,
             editable=editable,
             lineage_documents=documents,
             semantic_imports=semantic_imports,
+            entity_resolution_matches=entity_matches,
         )
 
     def workspace(
@@ -1374,6 +1395,15 @@ class ViewAPI(_RuntimeAPI):
                 runtime=self._runtime,
             )
         )
+        entity_matches = tuple(
+            match
+            for graph in graph_documents
+            for match in find_entity_resolution_candidates_for_graph_use_case(
+                graph,
+                mode="confirmed_then_candidates",
+                runtime=self._runtime,
+            )
+        )
         return browser_workspace(
             graph_documents,
             scope,
@@ -1381,6 +1411,7 @@ class ViewAPI(_RuntimeAPI):
             editable=editable,
             lineage_documents=lineage_documents,
             semantic_imports=semantic_imports,
+            entity_resolution_matches=entity_matches,
         )
 
 
@@ -1738,6 +1769,67 @@ class RelationshipAPI(_RuntimeAPI):
             edge_id=edge_id,
             state=state,
             reason=reason,
+            runtime=self._runtime,
+        )
+
+
+class EntityResolutionAPI(_RuntimeAPI):
+    """Import, retrieve, and review bounded entity-resolution hypotheses."""
+
+    def import_candidate(
+        self,
+        candidate: EntityResolutionCandidate,
+    ) -> EntityResolutionChangeResult:
+        return import_entity_resolution_candidate_use_case(
+            candidate,
+            runtime=self._runtime,
+        )
+
+    def load(self, candidate_id: str) -> EntityResolutionCandidate:
+        return load_entity_resolution_candidate_use_case(
+            candidate_id,
+            runtime=self._runtime,
+        )
+
+    def list(
+        self,
+        *,
+        graph: str | None = None,
+    ) -> tuple[EntityResolutionCandidate, ...]:
+        return list_entity_resolution_candidates_use_case(
+            graph_name=graph,
+            runtime=self._runtime,
+        )
+
+    def find(
+        self,
+        graph: str,
+        *,
+        source: str | None = None,
+        target: str | None = None,
+        mode: str = "confirmed_then_candidates",
+    ) -> tuple[EntityResolutionMatch, ...]:
+        return find_entity_resolution_candidates_use_case(
+            graph,
+            source=source,
+            target=target,
+            mode=mode,
+            runtime=self._runtime,
+        )
+
+    def decide(
+        self,
+        candidate_id: str,
+        *,
+        decision: str,
+        reason: str,
+        expected_revision: str | None = None,
+    ) -> EntityResolutionChangeResult:
+        return decide_entity_resolution_candidate_use_case(
+            candidate_id,
+            decision=decision,
+            reason=reason,
+            expected_revision=expected_revision,
             runtime=self._runtime,
         )
 

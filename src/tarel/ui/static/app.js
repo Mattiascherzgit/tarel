@@ -11,6 +11,7 @@ const state = {
   focusNames: null,
   focusSelection: null,
   focusSelectedOnly: false,
+  showEntityResolution: false,
   scopeFilters: null,
   trace: null,
   traceOnCanvas: false,
@@ -244,7 +245,11 @@ function renderGraph() {
   });
   if (state.canvasMode === "space") {
     elements.unshift(...spaceGroupElements(objects));
-    elements.push(...data.edges.filter(edge => objectIds.has(edge.source) && objectIds.has(edge.target)).map(edge => ({data: {id: edge.id, source: edge.source, target: edge.target, type: edge.type, state: edge.metadata.state || "declared"}})));
+    const graphEdges = data.edges.filter(edge =>
+      objectIds.has(edge.source) && objectIds.has(edge.target) &&
+      (state.showEntityResolution || edge.type !== "entity_resolution_candidate")
+    );
+    elements.push(...graphEdges.map(edge => ({data: {id: edge.id, source: edge.source, target: edge.target, type: edge.type, state: edge.metadata.state || "declared"}})));
   } else {
     elements.push(...lineageElements(objectIds));
   }
@@ -266,6 +271,8 @@ function renderGraph() {
       {selector: "node:selected", style: {"background-color": "#24243a", "border-color": "#818cf8", "border-width": 3}},
       {selector: "edge", style: {"curve-style": "bezier", "line-color": "#52525b", "target-arrow-color": "#71717a", "target-arrow-shape": "triangle", "width": 1, "opacity": .85}},
       {selector: 'edge[type = "relationship_candidate"]', style: {"line-style": "dashed", "line-color": "#f59e0b", "target-arrow-color": "#f59e0b"}},
+      {selector: 'edge[type = "entity_resolution_candidate"]', style: {"line-style": "dashed", "line-color": "#a855f7", "target-arrow-color": "#a855f7", "width": 2}},
+      {selector: 'edge[type = "entity_resolution_candidate"][state = "reviewed"]', style: {"line-style": "solid", "line-color": "#c084fc", "target-arrow-color": "#c084fc", "width": 2.5}},
       {selector: 'edge[type = "lineage"]', style: {"line-color": "#818cf8", "target-arrow-color": "#a5b4fc", "width": 2.5, "opacity": .95}},
       {selector: 'edge[type = "process"]', style: {"line-style": "dashed", "line-color": "#22d3ee", "target-arrow-color": "#22d3ee"}},
       {selector: ".hidden", style: {"display": "none"}},
@@ -437,7 +444,9 @@ function renderInspector() {
   const item = selectedObject();
   if (!item) return;
   const annotation = item.annotation;
-  const relationships = state.data.edges.filter(edge => edge.source === item.id || edge.target === item.id);
+  const connectedEdges = state.data.edges.filter(edge => edge.source === item.id || edge.target === item.id);
+  const entityCandidates = connectedEdges.filter(edge => edge.type === "entity_resolution_candidate");
+  const relationships = connectedEdges.filter(edge => edge.type !== "entity_resolution_candidate");
   const fieldSemantics = item.fields.flatMap(field => (field.source_semantics || []).map(entry => ({...entry, field_label: field.label})));
   const relationshipSemantics = relationships.flatMap(edge => edge.source_semantics || []);
   $("#inspector").innerHTML = `
@@ -446,8 +455,9 @@ function renderInspector() {
     <section class="detail-section tarel-semantics"><h3>TAREL annotation</h3><p class="description">${escapeHtml(annotation?.description || "No TAREL annotation yet.")}</p><small class="semantic-origin">Editable in Review · stored on the TAREL graph</small></section>
     <section class="detail-section"><div class="fact-grid">
       ${fact("State", annotation?.state || "missing")}${fact("Role", annotation?.role || "—")}${fact("Grain", item.grain || "—")}${fact("Confidence", annotation?.confidence == null ? "—" : `${Math.round(annotation.confidence * 100)}%`)}
-      ${fact("Primary key", item.primary_key.join(", ") || "—")}${fact("Relationships", String(relationships.length))}
+      ${fact("Primary key", item.primary_key.join(", ") || "—")}${fact("Relationships", String(relationships.length))}${fact("Entity candidates", String(entityCandidates.length))}
     </div></section>
+    ${entityResolutionCards(entityCandidates)}
     ${sourceSemanticCards(item.source_semantics || [], "Imported dataset semantics")}
     <section class="detail-section"><h3>Fields · ${item.fields.length}</h3><div class="field-list">${item.fields.map(fieldAnnotationCard).join("")}</div></section>
     ${sourceSemanticCards(fieldSemantics, "Imported field semantics")}
@@ -456,6 +466,16 @@ function renderInspector() {
     ${semanticImportDiagnostics()}
     ${annotation?.warnings?.length ? `<section class="detail-section"><h3>Warnings</h3><p class="description">${annotation.warnings.map(escapeHtml).join(" · ")}</p></section>` : ""}`;
   $$(".source-semantic-form").forEach(form => form.addEventListener("submit", saveSourceSemantic));
+}
+
+function entityResolutionCards(edges) {
+  if (!edges.length) return "";
+  return `<section class="detail-section"><h3>Entity-resolution hypotheses · ${edges.length}</h3><p class="semantic-origin">Candidates are information, not executable joins. Unreviewed rules require a runtime probe.</p>${edges.map(edge => {
+    const evidence = edge.metadata;
+    const otherId = edge.source === state.selectedId ? edge.target : edge.source;
+    const other = state.data.objects.find(item => item.id === otherId);
+    return `<article class="source-semantic-card"><header><span><strong>${escapeHtml(other?.name || "Unknown object")}</strong><small>${escapeHtml(evidence.source_field)} → ${escapeHtml(evidence.target_field)}</small></span><span class="source-state">${escapeHtml(evidence.state)}</span></header><div class="fact-grid">${fact("Evidence", evidence.evidence_level)}${fact("Evaluated", evidence.evaluated_count)}${fact("Coverage", `${Math.round(evidence.coverage * 100)}%`)}${fact("Collisions", `${Math.round(evidence.collision_rate * 100)}%`)}${fact("Confidence", `${Math.round(evidence.confidence * 100)}%`)}${fact("Human review", evidence.human_reviewed ? "Yes" : "No")}</div><p class="description mono">${escapeHtml(evidence.rule_kind)} · ${escapeHtml((evidence.operations || []).join(" → "))}</p>${evidence.requires_runtime_validation ? '<p class="field-detail warning"><strong>Usage</strong><span>Exploratory only · validate at runtime</span></p>' : ""}</article>`;
+  }).join("")}</section>`;
 }
 
 function fieldAnnotationCard(field) {
@@ -888,6 +908,7 @@ $$('.tab').forEach(button => button.addEventListener("click", () => switchView(b
 $$('.review-filter').forEach(button => button.addEventListener("click", () => { state.reviewFilter = button.dataset.reviewFilter; $$('.review-filter').forEach(item => item.classList.toggle("is-active", item === button)); renderReview(); }));
 $("#fit-graph").addEventListener("click", focusSelected);
 $("#show-all").addEventListener("click", () => { state.traceOnCanvas = false; state.cy.elements().removeClass("hidden dimmed zone-focus trace-focus"); state.cy.fit(undefined, 70); $("#canvas-title").textContent = state.canvasMode === "space" ? "Information space · all objects" : "Lineage · all selected documents"; });
+$("#toggle-entity-resolution").addEventListener("change", event => { state.showEntityResolution = event.target.checked; renderGraph(); });
 $("#trace-selected").addEventListener("click", () => trace(selectedObject()?.reference || ""));
 $("#show-trace-canvas").addEventListener("click", showTraceOnCanvas);
 $$('[data-canvas-mode]').forEach(button => button.addEventListener("click", () => {

@@ -59,6 +59,9 @@ knowledge, review schema drift, and move from a report or measure back through E
   relationships become a deterministic graph.
 - **Builds reviewed semantics** — models or coding agents propose descriptions, roles, grain,
   synonyms, field semantics, and possible joins; people validate, edit, defer, or reject them.
+- **Offers entity hypotheses** — graph-bound normalization candidates remain separate from joins,
+  expose aggregate coverage, collisions, confidence, and review state, and can be probed by agents
+  before human approval without being presented as facts.
 - **Imports external semantics** — experimental Apache Ossie, SML, and Cube YAML readers preserve,
   diagnose, and bind supported constructs to stable graph IDs while keeping them separate from
   reviewed TAREL annotations.
@@ -101,6 +104,43 @@ therefore retain compact DAX expressions, compiled SQL, or exact manifest bindin
 reducing a report-to-source path to unexplained arrows.
 
 This prevents a scheduler dependency from silently becoming invented table lineage.
+
+## Entity-resolution hypotheses
+
+TAREL can store and retrieve bounded normalization candidates without turning them into technical
+joins or confirmed facts. An agent may use an unreviewed candidate when no approved rule exists,
+but every CLI and SDK result exposes its evidence level, evaluated count, coverage, collision rate,
+confidence, review state, and `requires_runtime_validation` flag.
+
+```bash
+tarel entity import --source sanitized-candidate.json --format json
+
+tarel entity find music \
+  --source-field mb.ArtistCredit.Name \
+  --target-field mb.Artist.Name \
+  --mode confirmed_then_candidates \
+  --format json
+```
+
+```python
+from tarel.sdk import EntityResolutionCandidate, Tarel
+
+tarel = Tarel(".tarel")
+candidate = EntityResolutionCandidate.from_dict(sanitized_candidate_payload)
+tarel.entity_resolution.import_candidate(candidate)
+
+matches = tarel.entity_resolution.find(
+    "music",
+    source="mb.ArtistCredit.Name",
+    target="mb.Artist.Name",
+    mode="confirmed_then_candidates",
+)
+```
+
+Unreviewed matches use `exploratory_only`; TAREL never executes their rules. Current candidates can
+also be shown as optional violet edges in the local information-space graph. See
+[Entity-resolution candidates](docs/entity-resolution-candidates.md) for the complete contract,
+review commands, retrieval modes, and data boundary.
 
 ## Human in the loop
 
@@ -314,6 +354,7 @@ activates the package explicitly.
 | `tarel annotation` | Plan, apply, edit, and review semantic proposals |
 | `tarel knowledge` | Attach bounded Markdown/TXT context to annotation scopes |
 | `tarel relationship` | Add, discover, probe, and review joins |
+| `tarel entity` | Import, retrieve, inspect, and review entity-resolution hypotheses |
 | `tarel lineage` | Trace static lineage; import sanitized SQL/MongoDB/DuckDB runtime attempts |
 | `tarel focus` | Save report- or cube-centred upstream slices |
 | `tarel workspace` | Organize systems, areas, schemas, zones, and cross-graph joins |
